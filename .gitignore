@@ -1,0 +1,15 @@
+/target/
+
+# Anchor/Solana local artifacts
+test-ledger/
+.anchor/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# OS/editor noise
+.DS_Store
+*.swp
+*.swo

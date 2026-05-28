@@ -1,0 +1,18 @@
+[toolchain]
+anchor_version = "0.31.1"
+
+[features]
+seeds = false
+skip-lint = false
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "cargo test --workspace"
+
+# Add program addresses here as Anchor programs are introduced:
+#
+# [programs.localnet]
+# shadow_execution = "11111111111111111111111111111111"
