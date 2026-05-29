@@ -5,6 +5,7 @@ members = [
     "crates/core",
     "crates/relayer-client",
     "crates/stealth",
+    "programs/stealth-vault",
 ]
 
 [workspace.package]
@@ -18,3 +19,8 @@ anyhow = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1"
+anchor-lang = "0.31.1"
+clap = "4"
+solana-client = "2.2.1"
+solana-sdk = "2.2.1"
+shellexpand = "3"

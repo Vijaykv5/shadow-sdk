@@ -6,3 +6,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+anchor-lang.workspace = true
+solana-client.workspace = true
+solana-sdk.workspace = true
+stealth-vault = { path = "../../programs/stealth-vault", features = ["no-entrypoint"] }

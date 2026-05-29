@@ -1,0 +1,21 @@
+[package]
+name = "stealth-vault"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "stealth_vault"
+
+[features]
+default = []
+anchor-debug = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+
+[dependencies]
+anchor-lang.workspace = true

@@ -6,3 +6,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+shadow-stealth = { path = "../crates/stealth" }
+shellexpand.workspace = true
+solana-client.workspace = true
+solana-sdk.workspace = true
+
+[[bin]]
+name = "shadow"
+path = "src/main.rs"

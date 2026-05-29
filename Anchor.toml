@@ -13,6 +13,8 @@ wallet = "~/.config/solana/id.json"
 test = "cargo test --workspace"
 
 # Add program addresses here as Anchor programs are introduced:
-#
-# [programs.localnet]
-# shadow_execution = "11111111111111111111111111111111"
+[programs.localnet]
+stealth_vault = "4BrQYfhKFkKnCZAtEakMhqMgEVzevoq9j7wUEEPqSEaA"
+
+[programs.devnet]
+stealth_vault = "4BrQYfhKFkKnCZAtEakMhqMgEVzevoq9j7wUEEPqSEaA"
