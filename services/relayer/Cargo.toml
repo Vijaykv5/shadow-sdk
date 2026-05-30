@@ -16,3 +16,4 @@ shellexpand.workspace = true
 solana-client.workspace = true
 solana-sdk.workspace = true
 stealth-vault = { path = "../../programs/stealth-vault", features = ["no-entrypoint"] }
+toml.workspace = true

@@ -25,6 +25,7 @@ serde_json = "1"
 solana-client = "=2.2.1"
 solana-sdk = "=2.2.1"
 shellexpand = "3"
+toml = "0.8"
 
 [profile.release]
 overflow-checks = true

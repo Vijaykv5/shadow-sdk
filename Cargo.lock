@@ -3958,6 +3958,7 @@ dependencies = [
  "solana-client",
  "solana-sdk",
  "stealth-vault",
+ "toml 0.8.23",
 ]
 
 [[package]]

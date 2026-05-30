@@ -2,6 +2,7 @@ use std::{
     fs::{self, OpenOptions},
     io::ErrorKind,
     path::{Path, PathBuf},
+    str::FromStr,
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -9,6 +10,7 @@ use std::{
 use anchor_lang::AccountDeserialize;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Deserialize;
 use shadow_stealth::{derive_intent_pda, derive_vault_pda, execute_intent};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
@@ -70,9 +72,13 @@ struct QueueArgs {
 
 #[derive(Debug, Parser)]
 struct ExecuteOnceArgs {
+    /// TOML config file. CLI flags override values from this file.
+    #[arg(long)]
+    config: Option<PathBuf>,
+
     /// Cluster to read and submit transactions to.
-    #[arg(long, value_enum, default_value_t = Cluster::Localnet)]
-    cluster: Cluster,
+    #[arg(long, value_enum)]
+    cluster: Option<Cluster>,
 
     /// Override the RPC URL. Takes precedence over --cluster.
     #[arg(long)]
@@ -80,22 +86,26 @@ struct ExecuteOnceArgs {
 
     /// Owner pubkey for the vault.
     #[arg(long)]
-    owner: Pubkey,
+    owner: Option<Pubkey>,
 
     /// Current ephemeral authority keypair path. This signer marks the intent executed.
     #[arg(long)]
-    executor_keypair: String,
+    executor_keypair: Option<String>,
 
     /// Private intent payload JSON file.
     #[arg(long)]
-    payload: PathBuf,
+    payload: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
 struct RunArgs {
+    /// TOML config file. CLI flags override values from this file.
+    #[arg(long)]
+    config: Option<PathBuf>,
+
     /// Cluster to read and submit transactions to.
-    #[arg(long, value_enum, default_value_t = Cluster::Localnet)]
-    cluster: Cluster,
+    #[arg(long, value_enum)]
+    cluster: Option<Cluster>,
 
     /// Override the RPC URL. Takes precedence over --cluster.
     #[arg(long)]
@@ -103,30 +113,31 @@ struct RunArgs {
 
     /// Owner pubkey for the vault.
     #[arg(long)]
-    owner: Pubkey,
+    owner: Option<Pubkey>,
 
     /// Current ephemeral authority keypair path. This signer marks intents executed.
     #[arg(long)]
-    executor_keypair: String,
+    executor_keypair: Option<String>,
 
     /// Queue root containing pending, executed, and failed payload directories.
     #[arg(long)]
-    payload_dir: PathBuf,
+    payload_dir: Option<PathBuf>,
 
     /// Poll forever instead of exiting after one scan.
     #[arg(long)]
     watch: bool,
 
     /// Seconds to wait between scans when --watch is set.
-    #[arg(long, default_value_t = 5)]
-    poll_seconds: u64,
+    #[arg(long)]
+    poll_seconds: Option<u64>,
 
     /// Number of failed processing attempts before moving a payload to failed/.
-    #[arg(long, default_value_t = DEFAULT_MAX_RETRIES)]
-    max_retries: u8,
+    #[arg(long)]
+    max_retries: Option<u8>,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
 enum Cluster {
     Localnet,
     Devnet,
@@ -139,6 +150,35 @@ impl Cluster {
             Self::Devnet => "https://api.devnet.solana.com",
         }
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RelayerConfig {
+    cluster: Option<Cluster>,
+    rpc_url: Option<String>,
+    owner: Option<String>,
+    executor_keypair: Option<String>,
+    payload: Option<PathBuf>,
+    payload_dir: Option<PathBuf>,
+    poll_seconds: Option<u64>,
+    max_retries: Option<u8>,
+}
+
+struct ExecuteOnceConfig {
+    rpc_url: String,
+    owner: Pubkey,
+    executor_keypair: String,
+    payload: PathBuf,
+}
+
+struct RunConfig {
+    rpc_url: String,
+    owner: Pubkey,
+    executor_keypair: String,
+    payload_dir: PathBuf,
+    watch: bool,
+    poll_seconds: u64,
+    max_retries: u8,
 }
 
 fn main() -> Result<()> {
@@ -188,12 +228,17 @@ fn handle_queue_status(args: QueueArgs) -> Result<()> {
 }
 
 fn handle_execute_once(args: ExecuteOnceArgs) -> Result<()> {
-    let rpc_url = args
-        .rpc_url
-        .unwrap_or_else(|| args.cluster.rpc_url().to_string());
-    let rpc_client = RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::confirmed());
-    let executor = read_executor_keypair(&args.executor_keypair)?;
-    let result = execute_payload_file(&rpc_client, &rpc_url, args.owner, &executor, &args.payload)?;
+    let config = resolve_execute_once_config(args)?;
+    let rpc_client =
+        RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::confirmed());
+    let executor = read_executor_keypair(&config.executor_keypair)?;
+    let result = execute_payload_file(
+        &rpc_client,
+        &config.rpc_url,
+        config.owner,
+        &executor,
+        &config.payload,
+    )?;
 
     print_execution_result(&result);
 
@@ -201,18 +246,17 @@ fn handle_execute_once(args: ExecuteOnceArgs) -> Result<()> {
 }
 
 fn handle_run(args: RunArgs) -> Result<()> {
+    let config = resolve_run_config(args)?;
     anyhow::ensure!(
-        args.poll_seconds > 0,
+        config.poll_seconds > 0,
         "--poll-seconds must be greater than zero"
     );
 
-    let rpc_url = args
-        .rpc_url
-        .unwrap_or_else(|| args.cluster.rpc_url().to_string());
-    let rpc_client = RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::confirmed());
-    let executor = read_executor_keypair(&args.executor_keypair)?;
-    let poll_interval = Duration::from_secs(args.poll_seconds);
-    let queue_dirs = ensure_queue_dirs(&args.payload_dir)?;
+    let rpc_client =
+        RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::confirmed());
+    let executor = read_executor_keypair(&config.executor_keypair)?;
+    let poll_interval = Duration::from_secs(config.poll_seconds);
+    let queue_dirs = ensure_queue_dirs(&config.payload_dir)?;
 
     loop {
         let payload_files = list_payload_files(&queue_dirs.pending)?;
@@ -231,7 +275,8 @@ fn handle_run(args: RunArgs) -> Result<()> {
                 }
             };
 
-            match execute_payload_file(&rpc_client, &rpc_url, args.owner, &executor, &path) {
+            match execute_payload_file(&rpc_client, &config.rpc_url, config.owner, &executor, &path)
+            {
                 Ok(result) => {
                     println!("executed payload {}", path.display());
                     print_execution_result(&result);
@@ -243,7 +288,7 @@ fn handle_run(args: RunArgs) -> Result<()> {
                     println!("failed payload {}: {err:#}", path.display());
                     let attempts = record_failed_attempt(&path, &err)?;
 
-                    if attempts >= args.max_retries {
+                    if attempts >= config.max_retries {
                         let archived_path =
                             archive_failed_payload(&path, &queue_dirs.failed, &err, attempts)?;
                         println!("archived failed payload {}", archived_path.display());
@@ -251,14 +296,14 @@ fn handle_run(args: RunArgs) -> Result<()> {
                         println!(
                             "will retry payload {} ({attempts}/{})",
                             path.display(),
-                            args.max_retries
+                            config.max_retries
                         );
                     }
                 }
             }
         }
 
-        if !args.watch {
+        if !config.watch {
             break;
         }
 
@@ -266,6 +311,80 @@ fn handle_run(args: RunArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn resolve_execute_once_config(args: ExecuteOnceArgs) -> Result<ExecuteOnceConfig> {
+    let file_config = read_relayer_config(args.config.as_deref())?;
+    let cluster = args
+        .cluster
+        .or(file_config.cluster)
+        .unwrap_or(Cluster::Localnet);
+    let rpc_url = args
+        .rpc_url
+        .or(file_config.rpc_url)
+        .unwrap_or_else(|| cluster.rpc_url().to_string());
+
+    Ok(ExecuteOnceConfig {
+        rpc_url,
+        owner: resolve_owner(args.owner, file_config.owner)?,
+        executor_keypair: required_arg(
+            args.executor_keypair.or(file_config.executor_keypair),
+            "executor_keypair",
+        )?,
+        payload: required_arg(args.payload.or(file_config.payload), "payload")?,
+    })
+}
+
+fn resolve_run_config(args: RunArgs) -> Result<RunConfig> {
+    let file_config = read_relayer_config(args.config.as_deref())?;
+    let cluster = args
+        .cluster
+        .or(file_config.cluster)
+        .unwrap_or(Cluster::Localnet);
+    let rpc_url = args
+        .rpc_url
+        .or(file_config.rpc_url)
+        .unwrap_or_else(|| cluster.rpc_url().to_string());
+
+    Ok(RunConfig {
+        rpc_url,
+        owner: resolve_owner(args.owner, file_config.owner)?,
+        executor_keypair: required_arg(
+            args.executor_keypair.or(file_config.executor_keypair),
+            "executor_keypair",
+        )?,
+        payload_dir: required_arg(args.payload_dir.or(file_config.payload_dir), "payload_dir")?,
+        poll_seconds: args.poll_seconds.or(file_config.poll_seconds).unwrap_or(5),
+        max_retries: args
+            .max_retries
+            .or(file_config.max_retries)
+            .unwrap_or(DEFAULT_MAX_RETRIES),
+        watch: args.watch,
+    })
+}
+
+fn read_relayer_config(path: Option<&Path>) -> Result<RelayerConfig> {
+    let Some(path) = path else {
+        return Ok(RelayerConfig::default());
+    };
+
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read relayer config {}", path.display()))?;
+    toml::from_str(&contents)
+        .with_context(|| format!("failed to parse relayer config {}", path.display()))
+}
+
+fn required_arg<T>(value: Option<T>, name: &str) -> Result<T> {
+    value.with_context(|| format!("missing required relayer setting `{name}`"))
+}
+
+fn resolve_owner(cli_owner: Option<Pubkey>, config_owner: Option<String>) -> Result<Pubkey> {
+    if let Some(owner) = cli_owner {
+        return Ok(owner);
+    }
+
+    let owner = required_arg(config_owner, "owner")?;
+    Pubkey::from_str(&owner).with_context(|| format!("invalid owner pubkey `{owner}`"))
 }
 
 struct QueueDirs {
@@ -680,6 +799,82 @@ mod tests {
             executed_at: 0,
             bump: 255,
         }
+    }
+
+    #[test]
+    fn run_config_loads_from_toml_file() {
+        let dir = temp_test_dir("run-config");
+        let config_path = dir.join("relayer.toml");
+        fs::write(
+            &config_path,
+            r#"
+cluster = "devnet"
+owner = "11111111111111111111111111111111"
+executor_keypair = "~/.config/solana/ephemeral.json"
+payload_dir = "payloads"
+poll_seconds = 7
+max_retries = 4
+"#,
+        )
+        .expect("failed to write config");
+
+        let config = resolve_run_config(RunArgs {
+            config: Some(config_path),
+            cluster: None,
+            rpc_url: None,
+            owner: None,
+            executor_keypair: None,
+            payload_dir: None,
+            watch: true,
+            poll_seconds: None,
+            max_retries: None,
+        })
+        .expect("config should resolve");
+
+        assert_eq!(config.rpc_url, Cluster::Devnet.rpc_url());
+        assert_eq!(config.owner, Pubkey::default());
+        assert_eq!(config.executor_keypair, "~/.config/solana/ephemeral.json");
+        assert_eq!(config.payload_dir, PathBuf::from("payloads"));
+        assert!(config.watch);
+        assert_eq!(config.poll_seconds, 7);
+        assert_eq!(config.max_retries, 4);
+    }
+
+    #[test]
+    fn execute_once_cli_args_override_config_file() {
+        let dir = temp_test_dir("execute-config");
+        let config_path = dir.join("relayer.toml");
+        let cli_owner = Pubkey::new_unique();
+        let config_payload = dir.join("config.json");
+        let cli_payload = dir.join("cli.json");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+cluster = "devnet"
+owner = "11111111111111111111111111111111"
+executor_keypair = "config-keypair.json"
+payload = "{}"
+"#,
+                config_payload.display()
+            ),
+        )
+        .expect("failed to write config");
+
+        let config = resolve_execute_once_config(ExecuteOnceArgs {
+            config: Some(config_path),
+            cluster: Some(Cluster::Localnet),
+            rpc_url: Some("http://override.local".to_string()),
+            owner: Some(cli_owner),
+            executor_keypair: Some("cli-keypair.json".to_string()),
+            payload: Some(cli_payload.clone()),
+        })
+        .expect("config should resolve");
+
+        assert_eq!(config.rpc_url, "http://override.local");
+        assert_eq!(config.owner, cli_owner);
+        assert_eq!(config.executor_keypair, "cli-keypair.json");
+        assert_eq!(config.payload, cli_payload);
     }
 
     #[test]

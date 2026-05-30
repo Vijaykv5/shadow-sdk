@@ -61,6 +61,24 @@ The relayer hashes the exact payload file bytes with Solana's hash function. Sub
 
 ## Commands
 
+You can pass repeated relayer settings with CLI flags or a TOML config file:
+
+```toml
+cluster = "localnet"
+owner = "<OWNER_PUBKEY>"
+executor_keypair = "~/.config/solana/ephemeral.json"
+payload = "examples/mock-intent.json"
+payload_dir = "payloads"
+poll_seconds = 5
+max_retries = 3
+```
+
+CLI flags override config values:
+
+```bash
+cargo run -p shadow-relayer -- run --config examples/relayer.localnet.toml --watch
+```
+
 Create the queue folders:
 
 ```bash
@@ -83,6 +101,7 @@ Verify and execute one pending intent:
 
 ```bash
 cargo run -p shadow-relayer -- execute-once \
+  --config examples/relayer.localnet.toml \
   --owner <OWNER_PUBKEY> \
   --executor-keypair ~/.config/solana/ephemeral.json \
   --payload examples/mock-intent.json
@@ -107,6 +126,7 @@ Run one directory scan and execute every matching pending intent:
 
 ```bash
 cargo run -p shadow-relayer -- run \
+  --config examples/relayer.localnet.toml \
   --owner <OWNER_PUBKEY> \
   --executor-keypair ~/.config/solana/ephemeral.json \
   --payload-dir payloads \
