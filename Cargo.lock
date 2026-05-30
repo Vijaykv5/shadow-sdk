@@ -3945,10 +3945,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shadow-core"
-version = "0.1.0"
-
-[[package]]
 name = "shadow-relayer"
 version = "0.1.0"
 dependencies = [
@@ -3963,10 +3959,6 @@ dependencies = [
  "solana-sdk",
  "stealth-vault",
 ]
-
-[[package]]
-name = "shadow-relayer-client"
-version = "0.1.0"
 
 [[package]]
 name = "shadow-stealth"

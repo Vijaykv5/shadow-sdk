@@ -2,8 +2,6 @@
 resolver = "2"
 members = [
     "cli",
-    "crates/core",
-    "crates/relayer-client",
     "crates/stealth",
     "programs/stealth-vault",
     "services/relayer",
@@ -13,7 +11,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/shadow-labs/shadow-sdk"
+repository = "https://github.com/Vijaykv5/shadow-sdk"
 
 [workspace.dependencies]
 anyhow = "1"

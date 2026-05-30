@@ -1,0 +1,474 @@
+{
+  "address": "4BrQYfhKFkKnCZAtEakMhqMgEVzevoq9j7wUEEPqSEaA",
+  "metadata": {
+    "name": "stealth_vault",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "repository": "https://github.com/Vijaykv5/shadow-sdk"
+  },
+  "instructions": [
+    {
+      "name": "cancel_intent",
+      "discriminator": [
+        67,
+        73,
+        238,
+        244,
+        208,
+        89,
+        225,
+        59
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "vault",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault.owner",
+                "account": "Vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "intent",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  116,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "arg",
+                "path": "nonce"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "nonce",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "execute_intent",
+      "discriminator": [
+        53,
+        130,
+        47,
+        154,
+        227,
+        220,
+        122,
+        212
+      ],
+      "accounts": [
+        {
+          "name": "executor",
+          "signer": true
+        },
+        {
+          "name": "vault",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault.owner",
+                "account": "Vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "intent",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  116,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "arg",
+                "path": "nonce"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "nonce",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "initialize_vault",
+      "discriminator": [
+        48,
+        191,
+        163,
+        44,
+        71,
+        129,
+        63,
+        164
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "ephemeral_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "rotate_authority",
+      "discriminator": [
+        248,
+        225,
+        151,
+        35,
+        28,
+        15,
+        85,
+        12
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "vault"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_ephemeral_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "submit_execution_intent",
+      "discriminator": [
+        144,
+        64,
+        85,
+        209,
+        247,
+        3,
+        129,
+        47
+      ],
+      "accounts": [
+        {
+          "name": "ephemeral_authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "vault",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault.owner",
+                "account": "Vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "intent",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  116,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "arg",
+                "path": "nonce"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "payload_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "ExecutionIntent",
+      "discriminator": [
+        220,
+        63,
+        72,
+        180,
+        147,
+        230,
+        49,
+        49
+      ]
+    },
+    {
+      "name": "Vault",
+      "discriminator": [
+        211,
+        8,
+        232,
+        43,
+        2,
+        152,
+        117,
+        119
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidEphemeralAuthority",
+      "msg": "Signer is not the vault's current ephemeral authority"
+    },
+    {
+      "code": 6001,
+      "name": "UnauthorizedIntentCancellation",
+      "msg": "Signer is not allowed to cancel this intent"
+    },
+    {
+      "code": 6002,
+      "name": "UnauthorizedIntentExecution",
+      "msg": "Signer is not allowed to execute this intent"
+    },
+    {
+      "code": 6003,
+      "name": "IntentNotPending",
+      "msg": "Intent is not pending"
+    }
+  ],
+  "types": [
+    {
+      "name": "ExecutionIntent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "ephemeral_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "executor",
+            "type": "pubkey"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "payload_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "cancelled_at",
+            "type": "i64"
+          },
+          {
+            "name": "executed_at",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Vault",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "ephemeral_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}

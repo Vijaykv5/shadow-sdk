@@ -11,10 +11,13 @@ shadow-sdk/
 ├── README.md
 ├── cli/
 ├── crates/
+│   └── stealth/
 ├── docs/
 ├── examples/
 ├── idl/
+│   └── stealth_vault.json
 ├── programs/
+│   └── stealth-vault/
 └── services/
     └── relayer/
 ```
@@ -23,13 +26,13 @@ shadow-sdk/
 
 `programs/` is for on-chain Anchor programs. Add one folder per program, for example `programs/shadow-execution`.
 
-`crates/` is for reusable Rust SDK libraries. This is where shared transaction builders, account types, privacy helpers, MagicBlock/Jito adapters, and perps primitives should live.
+`crates/stealth/` is the reusable Rust SDK for vault and intent account derivation plus transaction builders. Add more crates only when there is real shared logic to extract.
 
 `cli/` is the operator/developer command-line tool. Keep it thin; real logic should live in `crates/`.
 
 `services/relayer/` is for the first infrastructure worker. The current relayer verifies a private payload file against an on-chain intent hash and marks the intent executed. Add more service folders only when they become real deployable binaries.
 
-`idl/` is for stable, checked-in Anchor IDLs that SDK users can consume. Anchor build output still goes to `target/idl`.
+`idl/` is for stable, checked-in Anchor IDLs that SDK users can consume. Anchor build output still goes to `target/idl`; copy stable IDLs here when they are part of the public interface.
 
 `examples/` is for small usage examples. Do not put core protocol logic here.
 
@@ -50,8 +53,8 @@ Cargo owns:
 - `Cargo.lock`
 - `cli/`
 - `crates/*`
-- future `services/*`
-- future `programs/*` when added as workspace members
+- `services/*`
+- `programs/*` when added as workspace members
 
 Use exactly one `Anchor.toml` and exactly one root Cargo workspace. Do not run `anchor init` inside subfolders.
 
