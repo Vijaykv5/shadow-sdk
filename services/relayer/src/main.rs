@@ -9,7 +9,6 @@ use std::{
 use anchor_lang::AccountDeserialize;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use serde::{Deserialize, Serialize};
 use shadow_stealth::{derive_intent_pda, derive_vault_pda, execute_intent};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
@@ -17,10 +16,16 @@ use solana_sdk::{
     hash::hash,
     pubkey::Pubkey,
     signature::{read_keypair_file, Signer},
-    system_instruction,
-    transaction::Transaction,
 };
 use stealth_vault::{ExecutionIntent, INTENT_STATUS_PENDING};
+
+mod executor;
+mod payload;
+
+use executor::execute_payload_action;
+use payload::{
+    parse_execution_route, parse_payload_action, ExecutionRoute, IntentPayload, PayloadAction,
+};
 
 const PENDING_DIR: &str = "pending";
 const EXECUTED_DIR: &str = "executed";
@@ -134,20 +139,6 @@ impl Cluster {
             Self::Devnet => "https://api.devnet.solana.com",
         }
     }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct IntentPayload {
-    nonce: u64,
-    kind: String,
-    payload: serde_json::Value,
-    expires_at: Option<i64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PayloadAction {
-    MockExecution { message: String },
-    SystemTransfer { to: Pubkey, lamports: u64 },
 }
 
 fn main() -> Result<()> {
@@ -296,6 +287,7 @@ struct LoadedPayload {
     intent: IntentPayload,
     hash: [u8; 32],
     action: PayloadAction,
+    route: ExecutionRoute,
 }
 
 fn read_payload_file(path: &Path) -> Result<LoadedPayload> {
@@ -305,61 +297,16 @@ fn read_payload_file(path: &Path) -> Result<LoadedPayload> {
         .with_context(|| format!("failed to parse payload JSON {}", path.display()))?;
     let action = parse_payload_action(&intent)
         .with_context(|| format!("failed to validate payload schema {}", path.display()))?;
+    let route = parse_execution_route(&intent)
+        .with_context(|| format!("failed to validate execution route {}", path.display()))?;
     let hash = hash(&bytes).to_bytes();
 
     Ok(LoadedPayload {
         intent,
         hash,
         action,
+        route,
     })
-}
-
-fn parse_payload_action(intent: &IntentPayload) -> Result<PayloadAction> {
-    match intent.kind.as_str() {
-        "mock_execution" => {
-            #[derive(Deserialize)]
-            struct MockPayload {
-                message: String,
-            }
-
-            let payload = serde_json::from_value::<MockPayload>(intent.payload.clone())
-                .context("mock_execution payload must contain string field `message`")?;
-            anyhow::ensure!(
-                !payload.message.trim().is_empty(),
-                "mock_execution message must not be empty"
-            );
-
-            Ok(PayloadAction::MockExecution {
-                message: payload.message,
-            })
-        }
-        "system_transfer" => {
-            #[derive(Deserialize)]
-            struct TransferPayload {
-                to: Pubkey,
-                lamports: u64,
-            }
-
-            let payload = serde_json::from_value::<TransferPayload>(intent.payload.clone())
-                .context("system_transfer payload must contain `to` and `lamports`")?;
-            anyhow::ensure!(
-                payload.to != Pubkey::default(),
-                "system_transfer recipient must not be the default pubkey"
-            );
-            anyhow::ensure!(
-                payload.lamports > 0,
-                "system_transfer lamports must be greater than zero"
-            );
-
-            Ok(PayloadAction::SystemTransfer {
-                to: payload.to,
-                lamports: payload.lamports,
-            })
-        }
-        other => anyhow::bail!(
-            "unsupported payload kind `{other}`; supported kinds are `mock_execution` and `system_transfer`"
-        ),
-    }
 }
 
 fn ensure_queue_dirs(payload_dir: &Path) -> Result<QueueDirs> {
@@ -461,7 +408,7 @@ fn archive_failed_payload(
     attempts: u8,
 ) -> Result<PathBuf> {
     let destination = archive_payload(path, destination_dir)?;
-    let error_path = destination.with_extension("json.error");
+    let error_path = error_path(&destination);
     fs::write(&error_path, failure_metadata(err, attempts)).with_context(|| {
         format!(
             "failed to write payload error file {}",
@@ -607,50 +554,17 @@ fn execute_payload_file(
     ensure_not_expired(&payload.intent)?;
     let intent_account = fetch_intent(rpc_client, owner, payload.intent.nonce)?;
     validate_intent_for_execution(&intent_account, payload.hash, executor.pubkey())?;
-    execute_payload_action(rpc_client, &payload.action, executor).with_context(|| {
-        format!(
-            "failed to execute private payload action for {}",
-            path.display()
-        )
-    })?;
+    execute_payload_action(rpc_client, &payload.action, &payload.route, executor).with_context(
+        || {
+            format!(
+                "failed to execute private payload action for {}",
+                path.display()
+            )
+        },
+    )?;
 
     execute_intent(rpc_client, owner, executor, payload.intent.nonce)
         .with_context(|| format!("failed to execute intent on {rpc_url}"))
-}
-
-fn execute_payload_action(
-    rpc_client: &RpcClient,
-    action: &PayloadAction,
-    executor: &solana_sdk::signature::Keypair,
-) -> Result<()> {
-    match action {
-        PayloadAction::MockExecution { message } => {
-            println!("mock execution: {message}");
-            Ok(())
-        }
-        PayloadAction::SystemTransfer { to, lamports } => {
-            let from = executor.pubkey();
-            let instruction = system_instruction::transfer(&from, to, *lamports);
-            let recent_blockhash = rpc_client
-                .get_latest_blockhash()
-                .context("failed to fetch latest blockhash for system transfer")?;
-            let transaction = Transaction::new_signed_with_payer(
-                &[instruction],
-                Some(&from),
-                &[executor],
-                recent_blockhash,
-            );
-
-            rpc_client
-                .send_and_confirm_transaction_with_spinner_and_commitment(
-                    &transaction,
-                    CommitmentConfig::confirmed(),
-                )
-                .context("failed to send and confirm system transfer")?;
-
-            Ok(())
-        }
-    }
 }
 
 fn validate_intent_for_execution(
@@ -723,6 +637,10 @@ fn print_execution_result(result: &shadow_stealth::ExecuteIntentResult) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        executor::validate_route_policy,
+        payload::{OrderSide, PerpsOrder, PerpsVenue},
+    };
     use solana_sdk::pubkey::Pubkey;
     use stealth_vault::{INTENT_STATUS_CANCELLED, INTENT_STATUS_EXECUTED};
 
@@ -782,6 +700,7 @@ mod tests {
                 message: "hello shadow".to_string()
             }
         );
+        assert_eq!(loaded.route, ExecutionRoute::PublicRpc);
         assert_eq!(loaded.hash, hash(bytes.as_bytes()).to_bytes());
     }
 
@@ -795,6 +714,7 @@ mod tests {
                 "to": recipient,
                 "lamports": 10,
             }),
+            route: None,
             expires_at: None,
         };
 
@@ -813,8 +733,9 @@ mod tests {
     fn rejects_unsupported_payload_kind() {
         let intent = IntentPayload {
             nonce: 8,
-            kind: "perps_order".to_string(),
+            kind: "unknown_action".to_string(),
             payload: serde_json::json!({}),
+            route: None,
             expires_at: None,
         };
 
@@ -835,6 +756,7 @@ mod tests {
                 "to": Pubkey::new_unique(),
                 "lamports": 0,
             }),
+            route: None,
             expires_at: None,
         };
 
@@ -845,6 +767,120 @@ mod tests {
                 .contains("system_transfer lamports must be greater than zero"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[test]
+    fn validates_perps_order_payload_schema() {
+        let intent = IntentPayload {
+            nonce: 9,
+            kind: "perps_order".to_string(),
+            payload: serde_json::json!({
+                "venue": "mock",
+                "market": "SOL-PERP",
+                "side": "long",
+                "size_base_lots": 10,
+                "limit_price": 150_000_000,
+                "max_slippage_bps": 50,
+                "reduce_only": false,
+                "client_order_id": "shadow-test-1",
+            }),
+            route: None,
+            expires_at: None,
+        };
+
+        let action = parse_payload_action(&intent).expect("perps payload should validate");
+
+        assert_eq!(
+            action,
+            PayloadAction::PerpsOrder(PerpsOrder {
+                venue: PerpsVenue::Mock,
+                market: "SOL-PERP".to_string(),
+                side: OrderSide::Long,
+                size_base_lots: 10,
+                limit_price: 150_000_000,
+                max_slippage_bps: 50,
+                reduce_only: false,
+                client_order_id: "shadow-test-1".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_perps_order_with_unsafe_slippage() {
+        let intent = IntentPayload {
+            nonce: 9,
+            kind: "perps_order".to_string(),
+            payload: serde_json::json!({
+                "venue": "mock",
+                "market": "SOL-PERP",
+                "side": "short",
+                "size_base_lots": 10,
+                "limit_price": 150_000_000,
+                "max_slippage_bps": 1_001,
+                "client_order_id": "shadow-test-2",
+            }),
+            route: None,
+            expires_at: None,
+        };
+
+        let err = parse_payload_action(&intent).expect_err("unsafe slippage should fail");
+
+        assert!(
+            err.to_string()
+                .contains("perps_order max_slippage_bps must be <= 1000"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn parses_mock_private_bundle_route() {
+        let intent = IntentPayload {
+            nonce: 9,
+            kind: "perps_order".to_string(),
+            payload: serde_json::json!({}),
+            route: Some(serde_json::json!({
+                "kind": "mock_private_bundle",
+                "tip_lamports": 5_000,
+            })),
+            expires_at: None,
+        };
+
+        let route = parse_execution_route(&intent).expect("route should parse");
+
+        assert_eq!(
+            route,
+            ExecutionRoute::MockPrivateBundle {
+                tip_lamports: 5_000
+            }
+        );
+    }
+
+    #[test]
+    fn perps_orders_require_private_or_bundle_route() {
+        let action = PayloadAction::PerpsOrder(PerpsOrder {
+            venue: PerpsVenue::Mock,
+            market: "SOL-PERP".to_string(),
+            side: OrderSide::Long,
+            size_base_lots: 10,
+            limit_price: 150_000_000,
+            max_slippage_bps: 50,
+            reduce_only: false,
+            client_order_id: "shadow-test-3".to_string(),
+        });
+
+        let err = validate_route_policy(&action, &ExecutionRoute::PublicRpc)
+            .expect_err("public route should be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("perps_order requires a private/bundle route"),
+            "unexpected error: {err:#}"
+        );
+        validate_route_policy(
+            &action,
+            &ExecutionRoute::MockPrivateBundle { tip_lamports: 0 },
+        )
+        .expect("mock private route should pass");
     }
 
     #[test]
@@ -962,7 +998,7 @@ mod tests {
 
         let archived =
             archive_failed_payload(&path, &failed, &err, 3).expect("failed payload should archive");
-        let error_path = archived.with_extension("json.error");
+        let error_path = error_path(&archived);
 
         assert_eq!(archived, failed.join("bad.json"));
         assert!(!path.exists());
@@ -1058,6 +1094,7 @@ mod tests {
             nonce: 1,
             kind: "mock_execution".to_string(),
             payload: serde_json::json!({}),
+            route: None,
             expires_at: None,
         };
         let future_expiry = IntentPayload {
@@ -1078,6 +1115,7 @@ mod tests {
             nonce: 1,
             kind: "mock_execution".to_string(),
             payload: serde_json::json!({}),
+            route: None,
             expires_at: Some(now - 1),
         };
 

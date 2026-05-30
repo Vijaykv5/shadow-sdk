@@ -1,0 +1,19 @@
+{
+  "nonce": 3,
+  "kind": "perps_order",
+  "payload": {
+    "venue": "mock",
+    "market": "SOL-PERP",
+    "side": "long",
+    "size_base_lots": 10,
+    "limit_price": 150000000,
+    "max_slippage_bps": 50,
+    "reduce_only": false,
+    "client_order_id": "shadow-demo-1"
+  },
+  "route": {
+    "kind": "mock_private_bundle",
+    "tip_lamports": 5000
+  },
+  "expires_at": null
+}

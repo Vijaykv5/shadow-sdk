@@ -2,7 +2,7 @@
 
 The relayer is the first off-chain worker for Shadow SDK. It verifies a private payload against an on-chain `ExecutionIntent` hash, runs the private action, then marks the intent executed.
 
-This first version supports `mock_execution` and a real `system_transfer` action. It does not place swaps, perps orders, Jito bundles, or MagicBlock actions yet.
+This first version supports `mock_execution`, a real `system_transfer` action, and schema-validated `perps_order` intents. It has a route policy for public RPC vs private/bundle execution, but the production Drift/Jito adapters are not wired yet.
 
 ## Payload Format
 
@@ -30,6 +30,32 @@ For a real lamport transfer from the executor keypair:
   "expires_at": null
 }
 ```
+
+For a perps order intent:
+
+```json
+{
+  "nonce": 3,
+  "kind": "perps_order",
+  "payload": {
+    "venue": "mock",
+    "market": "SOL-PERP",
+    "side": "long",
+    "size_base_lots": 10,
+    "limit_price": 150000000,
+    "max_slippage_bps": 50,
+    "reduce_only": false,
+    "client_order_id": "shadow-demo-1"
+  },
+  "route": {
+    "kind": "mock_private_bundle",
+    "tip_lamports": 5000
+  },
+  "expires_at": null
+}
+```
+
+`perps_order` intents intentionally cannot execute over `public_rpc`. Use `mock_private_bundle` for local development. `jito_bundle` is accepted by the schema and requires a positive `tip_lamports`, but production Jito block-engine submission still needs an adapter.
 
 The relayer hashes the exact payload file bytes with Solana's hash function. Submit that hash on-chain as the intent `payload_hash`.
 
