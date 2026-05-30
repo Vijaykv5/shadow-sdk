@@ -10,7 +10,7 @@ pub use errors::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("4BrQYfhKFkKnCZAtEakMhqMgEVzevoq9j7wUEEPqSEaA");
+declare_id!("4XmHzu3kxf3oyD2bchUmkDKoq2QADHkP13Zcv1hsS5X5");
 
 #[program]
 pub mod stealth_vault {

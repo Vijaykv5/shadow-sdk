@@ -126,6 +126,12 @@ For devnet:
 cargo run -p shadow-cli -- create-vault --cluster devnet
 ```
 
+Check devnet readiness and print the exact deploy/test commands:
+
+```bash
+cargo run -p shadow-cli -- devnet-status
+```
+
 You can provide an existing execution authority:
 
 ```bash

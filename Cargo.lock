@@ -3965,11 +3965,10 @@ dependencies = [
 name = "shadow-stealth"
 version = "0.1.0"
 dependencies = [
- "anchor-lang",
  "anyhow",
+ "serde_json",
  "solana-client",
  "solana-sdk",
- "stealth-vault",
 ]
 
 [[package]]

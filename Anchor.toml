@@ -14,7 +14,7 @@ test = "cargo test --workspace"
 
 # Add program addresses here as Anchor programs are introduced:
 [programs.localnet]
-stealth_vault = "4BrQYfhKFkKnCZAtEakMhqMgEVzevoq9j7wUEEPqSEaA"
+stealth_vault = "4XmHzu3kxf3oyD2bchUmkDKoq2QADHkP13Zcv1hsS5X5"
 
 [programs.devnet]
-stealth_vault = "4BrQYfhKFkKnCZAtEakMhqMgEVzevoq9j7wUEEPqSEaA"
+stealth_vault = "4XmHzu3kxf3oyD2bchUmkDKoq2QADHkP13Zcv1hsS5X5"

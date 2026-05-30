@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Anchor program interface for Shadow SDK stealth vaults and hashed execution intents"
+readme = "README.md"
+keywords = ["solana", "anchor", "privacy", "mev", "intent"]
+categories = ["cryptography::cryptocurrencies"]
 
 [lib]
 crate-type = ["cdylib", "lib"]

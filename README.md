@@ -15,3 +15,27 @@ The first implemented path is the stealth vault layer:
 ## Repository Map
 
 See [docs/architecture/repository-structure.md](docs/architecture/repository-structure.md) for the production folder architecture and ownership rules.
+
+## Rust Crates
+
+Shadow SDK is structured so downstream Solana apps can depend on the reusable
+SDK crate directly:
+
+```toml
+[dependencies]
+shadow-stealth = "0.1.0"
+```
+
+During early development:
+
+```toml
+shadow-stealth = { git = "https://github.com/Vijaykv5/shadow-sdk" }
+```
+
+The published crates are:
+
+- `shadow-stealth`: user-facing Rust SDK
+- `stealth-vault`: lower-level Anchor program interface crate
+
+See [docs/publishing-crates.md](docs/publishing-crates.md) for the crates.io
+publish flow.

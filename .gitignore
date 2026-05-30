@@ -1,8 +1,14 @@
 /target/
 
+# Frontend dependencies and build output
+node_modules/
+.next/
+*.tsbuildinfo
+
 # Anchor/Solana local artifacts
 test-ledger/
 .anchor/
+/payloads/
 
 # Local environment
 .env

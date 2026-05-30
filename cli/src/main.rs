@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use shadow_stealth::{
-    cancel_intent, create_vault, execute_intent, rotate_authority, submit_execution_intent,
+    cancel_intent, create_vault, execute_intent, rotate_authority, stealth_vault_program_id,
+    submit_execution_intent,
 };
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
@@ -9,6 +10,9 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::{read_keypair_file, Keypair, Signer},
 };
+
+const DEVNET_DEPLOY_WALLET: &str = "2eDJJZydDTV4HQmbtX6YwhrdfCW7XU3zms9538HGqkuB";
+const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 
 #[derive(Debug, Parser)]
 #[command(name = "shadow")]
@@ -30,6 +34,8 @@ enum Command {
     CancelIntent(CancelIntentArgs),
     /// Mark a pending execution intent as executed using the current ephemeral authority.
     ExecuteIntent(ExecuteIntentArgs),
+    /// Print devnet deployment and CLI test readiness.
+    DevnetStatus(DevnetStatusArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -163,6 +169,29 @@ struct ExecuteIntentArgs {
     nonce: u64,
 }
 
+#[derive(Debug, Parser)]
+struct DevnetStatusArgs {
+    /// Override the RPC URL.
+    #[arg(long, default_value = "https://api.devnet.solana.com")]
+    rpc_url: String,
+
+    /// Owner and fee-payer keypair path used by CLI examples.
+    #[arg(long, default_value = "~/.config/solana/id.json")]
+    keypair: String,
+
+    /// Ephemeral authority keypair path used by CLI examples.
+    #[arg(long, default_value = "~/.config/solana/id.json")]
+    ephemeral_authority_keypair: String,
+
+    /// Nonce used in the printed submit/execute examples.
+    #[arg(long, default_value_t = 1)]
+    nonce: u64,
+
+    /// Optional payload hash to include in the printed submit-intent command.
+    #[arg(long)]
+    payload_hash: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Cluster {
     Localnet,
@@ -187,6 +216,7 @@ fn main() -> Result<()> {
         Command::SubmitIntent(args) => handle_submit_intent(args),
         Command::CancelIntent(args) => handle_cancel_intent(args),
         Command::ExecuteIntent(args) => handle_execute_intent(args),
+        Command::DevnetStatus(args) => handle_devnet_status(args),
     }
 }
 
@@ -366,6 +396,73 @@ fn handle_execute_intent(args: ExecuteIntentArgs) -> Result<()> {
     Ok(())
 }
 
+fn handle_devnet_status(args: DevnetStatusArgs) -> Result<()> {
+    let keypair_path = shellexpand::tilde(&args.keypair).into_owned();
+    let owner = read_keypair_file(&keypair_path)
+        .map_err(|err| anyhow::anyhow!("failed to read keypair at {keypair_path}: {err}"))?;
+    let ephemeral_keypair_path = shellexpand::tilde(&args.ephemeral_authority_keypair).into_owned();
+    let ephemeral_authority = read_keypair_file(&ephemeral_keypair_path).map_err(|err| {
+        anyhow::anyhow!(
+            "failed to read ephemeral authority keypair at {ephemeral_keypair_path}: {err}"
+        )
+    })?;
+    let rpc_client =
+        RpcClient::new_with_commitment(args.rpc_url.clone(), CommitmentConfig::confirmed());
+    let owner_balance = rpc_client
+        .get_balance(&owner.pubkey())
+        .with_context(|| format!("failed to fetch owner balance from {}", args.rpc_url))?;
+    let deploy_wallet = DEVNET_DEPLOY_WALLET
+        .parse::<Pubkey>()
+        .context("devnet deploy wallet constant is not a valid pubkey")?;
+    let deploy_balance = rpc_client.get_balance(&deploy_wallet).unwrap_or(0);
+    let payload_hash = args
+        .payload_hash
+        .as_deref()
+        .unwrap_or("<PAYLOAD_HASH_FROM_WEB_OR_RELAYER_HASH_PAYLOAD>");
+
+    println!("Shadow SDK devnet status");
+    println!("rpc url: {}", args.rpc_url);
+    let program_id = stealth_vault_program_id();
+    println!("program id: {}", program_id);
+    println!(
+        "deploy wallet: {} ({} SOL)",
+        deploy_wallet,
+        format_sol(deploy_balance)
+    );
+    println!(
+        "owner wallet: {} ({} SOL)",
+        owner.pubkey(),
+        format_sol(owner_balance)
+    );
+    println!("ephemeral authority: {}", ephemeral_authority.pubkey());
+    println!();
+    println!("fund deploy wallet:");
+    println!("  solana airdrop 2 {deploy_wallet} --url devnet");
+    println!();
+    println!("deploy program:");
+    println!("  anchor build");
+    println!("  anchor deploy --provider.cluster devnet");
+    println!("  solana program show {} --url devnet", program_id);
+    println!();
+    println!("test with CLI:");
+    println!("  cargo run -p shadow-cli -- create-vault --cluster devnet \\");
+    println!("    --keypair {} \\", args.keypair);
+    println!(
+        "    --ephemeral-authority-keypair {}",
+        args.ephemeral_authority_keypair
+    );
+    println!("  cargo run -p shadow-cli -- submit-intent --cluster devnet \\");
+    println!("    --owner {} \\", owner.pubkey());
+    println!(
+        "    --ephemeral-authority-keypair {} \\",
+        args.ephemeral_authority_keypair
+    );
+    println!("    --nonce {} \\", args.nonce);
+    println!("    --payload-hash {payload_hash}");
+
+    Ok(())
+}
+
 fn parse_payload_hash(value: &str) -> Result<[u8; 32]> {
     let trimmed = value
         .strip_prefix("0x")
@@ -408,6 +505,12 @@ fn resolve_authority_pubkey(
         }
         (None, None) => Ok(Keypair::new().pubkey()),
     }
+}
+
+fn format_sol(lamports: u64) -> String {
+    let whole = lamports / LAMPORTS_PER_SOL;
+    let fractional = lamports % LAMPORTS_PER_SOL;
+    format!("{whole}.{fractional:09}")
 }
 
 fn format_payload_hash(payload_hash: &[u8; 32]) -> String {
