@@ -1,5 +1,6 @@
 use std::{
-    fs,
+    fs::{self, OpenOptions},
+    io::ErrorKind,
     path::{Path, PathBuf},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -16,12 +17,15 @@ use solana_sdk::{
     hash::hash,
     pubkey::Pubkey,
     signature::{read_keypair_file, Signer},
+    system_instruction,
+    transaction::Transaction,
 };
 use stealth_vault::{ExecutionIntent, INTENT_STATUS_PENDING};
 
 const PENDING_DIR: &str = "pending";
 const EXECUTED_DIR: &str = "executed";
 const FAILED_DIR: &str = "failed";
+const DEFAULT_MAX_RETRIES: u8 = 3;
 
 #[derive(Debug, Parser)]
 #[command(name = "shadow-relayer")]
@@ -111,6 +115,10 @@ struct RunArgs {
     /// Seconds to wait between scans when --watch is set.
     #[arg(long, default_value_t = 5)]
     poll_seconds: u64,
+
+    /// Number of failed processing attempts before moving a payload to failed/.
+    #[arg(long, default_value_t = DEFAULT_MAX_RETRIES)]
+    max_retries: u8,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -134,6 +142,12 @@ struct IntentPayload {
     kind: String,
     payload: serde_json::Value,
     expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PayloadAction {
+    MockExecution { message: String },
+    SystemTransfer { to: Pubkey, lamports: u64 },
 }
 
 fn main() -> Result<()> {
@@ -218,17 +232,37 @@ fn handle_run(args: RunArgs) -> Result<()> {
         );
 
         for path in payload_files {
+            let _lock = match acquire_payload_lock(&path) {
+                Ok(lock) => lock,
+                Err(err) => {
+                    println!("skipping locked payload {}: {err:#}", path.display());
+                    continue;
+                }
+            };
+
             match execute_payload_file(&rpc_client, &rpc_url, args.owner, &executor, &path) {
                 Ok(result) => {
                     println!("executed payload {}", path.display());
                     print_execution_result(&result);
                     let archived_path = archive_payload(&path, &queue_dirs.executed)?;
+                    remove_attempt_metadata(&path)?;
                     println!("archived executed payload {}", archived_path.display());
                 }
                 Err(err) => {
                     println!("failed payload {}: {err:#}", path.display());
-                    let archived_path = archive_failed_payload(&path, &queue_dirs.failed, &err)?;
-                    println!("archived failed payload {}", archived_path.display());
+                    let attempts = record_failed_attempt(&path, &err)?;
+
+                    if attempts >= args.max_retries {
+                        let archived_path =
+                            archive_failed_payload(&path, &queue_dirs.failed, &err, attempts)?;
+                        println!("archived failed payload {}", archived_path.display());
+                    } else {
+                        println!(
+                            "will retry payload {} ({attempts}/{})",
+                            path.display(),
+                            args.max_retries
+                        );
+                    }
                 }
             }
         }
@@ -261,6 +295,7 @@ struct QueueStatus {
 struct LoadedPayload {
     intent: IntentPayload,
     hash: [u8; 32],
+    action: PayloadAction,
 }
 
 fn read_payload_file(path: &Path) -> Result<LoadedPayload> {
@@ -268,9 +303,63 @@ fn read_payload_file(path: &Path) -> Result<LoadedPayload> {
         .with_context(|| format!("failed to read payload file {}", path.display()))?;
     let intent = serde_json::from_slice::<IntentPayload>(&bytes)
         .with_context(|| format!("failed to parse payload JSON {}", path.display()))?;
+    let action = parse_payload_action(&intent)
+        .with_context(|| format!("failed to validate payload schema {}", path.display()))?;
     let hash = hash(&bytes).to_bytes();
 
-    Ok(LoadedPayload { intent, hash })
+    Ok(LoadedPayload {
+        intent,
+        hash,
+        action,
+    })
+}
+
+fn parse_payload_action(intent: &IntentPayload) -> Result<PayloadAction> {
+    match intent.kind.as_str() {
+        "mock_execution" => {
+            #[derive(Deserialize)]
+            struct MockPayload {
+                message: String,
+            }
+
+            let payload = serde_json::from_value::<MockPayload>(intent.payload.clone())
+                .context("mock_execution payload must contain string field `message`")?;
+            anyhow::ensure!(
+                !payload.message.trim().is_empty(),
+                "mock_execution message must not be empty"
+            );
+
+            Ok(PayloadAction::MockExecution {
+                message: payload.message,
+            })
+        }
+        "system_transfer" => {
+            #[derive(Deserialize)]
+            struct TransferPayload {
+                to: Pubkey,
+                lamports: u64,
+            }
+
+            let payload = serde_json::from_value::<TransferPayload>(intent.payload.clone())
+                .context("system_transfer payload must contain `to` and `lamports`")?;
+            anyhow::ensure!(
+                payload.to != Pubkey::default(),
+                "system_transfer recipient must not be the default pubkey"
+            );
+            anyhow::ensure!(
+                payload.lamports > 0,
+                "system_transfer lamports must be greater than zero"
+            );
+
+            Ok(PayloadAction::SystemTransfer {
+                to: payload.to,
+                lamports: payload.lamports,
+            })
+        }
+        other => anyhow::bail!(
+            "unsupported payload kind `{other}`; supported kinds are `mock_execution` and `system_transfer`"
+        ),
+    }
 }
 
 fn ensure_queue_dirs(payload_dir: &Path) -> Result<QueueDirs> {
@@ -316,6 +405,7 @@ fn list_payload_files(payload_dir: &Path) -> Result<Vec<PathBuf>> {
         if path
             .extension()
             .is_some_and(|extension| extension == "json")
+            && !lock_path(&path).exists()
         {
             files.push(path);
         }
@@ -368,17 +458,105 @@ fn archive_failed_payload(
     path: &Path,
     destination_dir: &Path,
     err: &anyhow::Error,
+    attempts: u8,
 ) -> Result<PathBuf> {
     let destination = archive_payload(path, destination_dir)?;
     let error_path = destination.with_extension("json.error");
-    fs::write(&error_path, format!("{err:#}\n")).with_context(|| {
+    fs::write(&error_path, failure_metadata(err, attempts)).with_context(|| {
         format!(
             "failed to write payload error file {}",
             error_path.display()
         )
     })?;
+    remove_attempt_metadata(path)?;
 
     Ok(destination)
+}
+
+fn failure_metadata(err: &anyhow::Error, attempts: u8) -> String {
+    serde_json::json!({
+        "attempts": attempts,
+        "error": format!("{err:#}"),
+    })
+    .to_string()
+}
+
+fn attempt_path(path: &Path) -> PathBuf {
+    sidecar_path(path, "attempts")
+}
+
+fn error_path(path: &Path) -> PathBuf {
+    sidecar_path(path, "error")
+}
+
+fn lock_path(path: &Path) -> PathBuf {
+    sidecar_path(path, "lock")
+}
+
+fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut sidecar = path.as_os_str().to_os_string();
+    sidecar.push(".");
+    sidecar.push(suffix);
+    PathBuf::from(sidecar)
+}
+
+fn read_attempts(path: &Path) -> Result<u8> {
+    let path = attempt_path(path);
+
+    match fs::read_to_string(&path) {
+        Ok(contents) => contents
+            .trim()
+            .parse::<u8>()
+            .with_context(|| format!("failed to parse attempt count {}", path.display())),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(0),
+        Err(err) => Err(err).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+fn record_failed_attempt(path: &Path, err: &anyhow::Error) -> Result<u8> {
+    let attempts = read_attempts(path)?.saturating_add(1);
+    fs::write(attempt_path(path), attempts.to_string())
+        .with_context(|| format!("failed to write attempt count for {}", path.display()))?;
+    fs::write(error_path(path), failure_metadata(err, attempts))
+        .with_context(|| format!("failed to write retry error for {}", path.display()))?;
+
+    Ok(attempts)
+}
+
+fn remove_attempt_metadata(path: &Path) -> Result<()> {
+    for metadata_path in [attempt_path(path), error_path(path)] {
+        match fs::remove_file(&metadata_path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to remove {}", metadata_path.display()))
+            }
+        }
+    }
+
+    Ok(())
+}
+
+struct PayloadLock {
+    path: PathBuf,
+}
+
+impl Drop for PayloadLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_payload_lock(path: &Path) -> Result<PayloadLock> {
+    let path = lock_path(path);
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .with_context(|| format!("failed to acquire payload lock {}", path.display()))?;
+
+    Ok(PayloadLock { path })
 }
 
 fn next_archive_path(path: &Path, destination_dir: &Path) -> Result<PathBuf> {
@@ -429,9 +607,50 @@ fn execute_payload_file(
     ensure_not_expired(&payload.intent)?;
     let intent_account = fetch_intent(rpc_client, owner, payload.intent.nonce)?;
     validate_intent_for_execution(&intent_account, payload.hash, executor.pubkey())?;
+    execute_payload_action(rpc_client, &payload.action, executor).with_context(|| {
+        format!(
+            "failed to execute private payload action for {}",
+            path.display()
+        )
+    })?;
 
     execute_intent(rpc_client, owner, executor, payload.intent.nonce)
         .with_context(|| format!("failed to execute intent on {rpc_url}"))
+}
+
+fn execute_payload_action(
+    rpc_client: &RpcClient,
+    action: &PayloadAction,
+    executor: &solana_sdk::signature::Keypair,
+) -> Result<()> {
+    match action {
+        PayloadAction::MockExecution { message } => {
+            println!("mock execution: {message}");
+            Ok(())
+        }
+        PayloadAction::SystemTransfer { to, lamports } => {
+            let from = executor.pubkey();
+            let instruction = system_instruction::transfer(&from, to, *lamports);
+            let recent_blockhash = rpc_client
+                .get_latest_blockhash()
+                .context("failed to fetch latest blockhash for system transfer")?;
+            let transaction = Transaction::new_signed_with_payer(
+                &[instruction],
+                Some(&from),
+                &[executor],
+                recent_blockhash,
+            );
+
+            rpc_client
+                .send_and_confirm_transaction_with_spinner_and_commitment(
+                    &transaction,
+                    CommitmentConfig::confirmed(),
+                )
+                .context("failed to send and confirm system transfer")?;
+
+            Ok(())
+        }
+    }
 }
 
 fn validate_intent_for_execution(
@@ -557,7 +776,75 @@ mod tests {
         assert_eq!(loaded.intent.nonce, 7);
         assert_eq!(loaded.intent.kind, "mock_execution");
         assert_eq!(loaded.intent.expires_at, None);
+        assert_eq!(
+            loaded.action,
+            PayloadAction::MockExecution {
+                message: "hello shadow".to_string()
+            }
+        );
         assert_eq!(loaded.hash, hash(bytes.as_bytes()).to_bytes());
+    }
+
+    #[test]
+    fn validates_system_transfer_payload_schema() {
+        let recipient = Pubkey::new_unique();
+        let intent = IntentPayload {
+            nonce: 8,
+            kind: "system_transfer".to_string(),
+            payload: serde_json::json!({
+                "to": recipient,
+                "lamports": 10,
+            }),
+            expires_at: None,
+        };
+
+        let action = parse_payload_action(&intent).expect("transfer payload should validate");
+
+        assert_eq!(
+            action,
+            PayloadAction::SystemTransfer {
+                to: recipient,
+                lamports: 10,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_payload_kind() {
+        let intent = IntentPayload {
+            nonce: 8,
+            kind: "perps_order".to_string(),
+            payload: serde_json::json!({}),
+            expires_at: None,
+        };
+
+        let err = parse_payload_action(&intent).expect_err("unsupported kind should fail");
+
+        assert!(
+            err.to_string().contains("unsupported payload kind"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_payload_schema() {
+        let intent = IntentPayload {
+            nonce: 8,
+            kind: "system_transfer".to_string(),
+            payload: serde_json::json!({
+                "to": Pubkey::new_unique(),
+                "lamports": 0,
+            }),
+            expires_at: None,
+        };
+
+        let err = parse_payload_action(&intent).expect_err("invalid transfer should fail");
+
+        assert!(
+            err.to_string()
+                .contains("system_transfer lamports must be greater than zero"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]
@@ -580,6 +867,9 @@ mod tests {
         fs::write(dir.join("b.json"), valid_payload_json(2, None)).expect("failed to write b");
         fs::write(dir.join("notes.txt"), "ignore me").expect("failed to write notes");
         fs::write(dir.join("a.json"), valid_payload_json(1, None)).expect("failed to write a");
+        fs::write(dir.join("locked.json"), valid_payload_json(3, None))
+            .expect("failed to write locked");
+        fs::write(dir.join("locked.json.lock"), "").expect("failed to write lock");
 
         let files = list_payload_files(&dir).expect("payload dir should list");
         let names = files
@@ -671,7 +961,7 @@ mod tests {
         let err = anyhow::anyhow!("payload hash does not match on-chain intent");
 
         let archived =
-            archive_failed_payload(&path, &failed, &err).expect("failed payload should archive");
+            archive_failed_payload(&path, &failed, &err, 3).expect("failed payload should archive");
         let error_path = archived.with_extension("json.error");
 
         assert_eq!(archived, failed.join("bad.json"));
@@ -683,6 +973,41 @@ mod tests {
         assert!(fs::read_to_string(error_path)
             .expect("failed to read error file")
             .contains("payload hash does not match"),);
+    }
+
+    #[test]
+    fn retry_metadata_tracks_attempts_before_archiving() {
+        let dir = temp_test_dir("retry-metadata");
+        let path = dir.join("intent.json");
+        fs::write(&path, valid_payload_json(1, None)).expect("failed to write payload");
+        let err = anyhow::anyhow!("temporary rpc error");
+
+        let first = record_failed_attempt(&path, &err).expect("first attempt should record");
+        let second = record_failed_attempt(&path, &err).expect("second attempt should record");
+
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
+        assert_eq!(read_attempts(&path).expect("attempt count should read"), 2);
+        assert!(fs::read_to_string(error_path(&path))
+            .expect("failed to read retry error")
+            .contains("temporary rpc error"));
+    }
+
+    #[test]
+    fn payload_lock_blocks_second_processor_and_cleans_up_on_drop() {
+        let dir = temp_test_dir("lock");
+        let path = dir.join("intent.json");
+        fs::write(&path, valid_payload_json(1, None)).expect("failed to write payload");
+
+        let lock = acquire_payload_lock(&path).expect("first lock should succeed");
+        let second_lock = acquire_payload_lock(&path);
+
+        assert!(second_lock.is_err());
+        assert!(lock_path(&path).exists());
+
+        drop(lock);
+
+        assert!(!lock_path(&path).exists());
     }
 
     #[test]

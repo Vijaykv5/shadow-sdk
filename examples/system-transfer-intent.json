@@ -1,0 +1,9 @@
+{
+  "nonce": 2,
+  "kind": "system_transfer",
+  "payload": {
+    "to": "So11111111111111111111111111111111111111112",
+    "lamports": 1000000
+  },
+  "expires_at": null
+}

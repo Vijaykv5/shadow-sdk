@@ -1,8 +1,8 @@
 # Shadow Relayer
 
-The relayer is the first off-chain worker for Shadow SDK. It verifies a private payload against an on-chain `ExecutionIntent` hash, then marks the intent executed.
+The relayer is the first off-chain worker for Shadow SDK. It verifies a private payload against an on-chain `ExecutionIntent` hash, runs the private action, then marks the intent executed.
 
-This first version performs a mock execution only. It does not place swaps, perps orders, Jito bundles, or MagicBlock actions yet.
+This first version supports `mock_execution` and a real `system_transfer` action. It does not place swaps, perps orders, Jito bundles, or MagicBlock actions yet.
 
 ## Payload Format
 
@@ -12,6 +12,20 @@ This first version performs a mock execution only. It does not place swaps, perp
   "kind": "mock_execution",
   "payload": {
     "message": "hello shadow"
+  },
+  "expires_at": null
+}
+```
+
+For a real lamport transfer from the executor keypair:
+
+```json
+{
+  "nonce": 2,
+  "kind": "system_transfer",
+  "payload": {
+    "to": "<RECIPIENT_PUBKEY>",
+    "lamports": 1000000
   },
   "expires_at": null
 }
@@ -69,7 +83,8 @@ Run one directory scan and execute every matching pending intent:
 cargo run -p shadow-relayer -- run \
   --owner <OWNER_PUBKEY> \
   --executor-keypair ~/.config/solana/ephemeral.json \
-  --payload-dir payloads
+  --payload-dir payloads \
+  --max-retries 3
 ```
 
 Run continuously:
@@ -84,3 +99,5 @@ cargo run -p shadow-relayer -- run \
 ```
 
 Each `.json` file in `pending/` is parsed, expiry-checked, hash-checked against the on-chain intent, and only then submitted as an `execute_intent` transaction.
+
+The queue uses a sidecar `.lock` file while a payload is being processed so two relayers do not process the same file at once. Failed attempts stay in `pending/` until `--max-retries` is reached. The relayer records retry metadata in `.attempts` and `.error` sidecar files, then moves the payload to `failed/` with a final `.error` metadata file after the retry limit.
