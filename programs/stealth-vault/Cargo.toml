@@ -13,6 +13,7 @@ name = "stealth_vault"
 default = []
 anchor-debug = []
 cpi = ["no-entrypoint"]
+idl-build = ["anchor-lang/idl-build"]
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []

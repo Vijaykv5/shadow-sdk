@@ -4,6 +4,12 @@ Shadow SDK is a Solana infrastructure monorepo for private and MEV-resistant exe
 
 This repository is intentionally organized as an infrastructure ecosystem, not as a single dApp.
 
+The first implemented path is the stealth vault layer:
+
+- create a per-owner vault PDA
+- rotate a temporary execution authority
+- submit hashed execution intents from the current ephemeral authority
+
 ## Repository Map
 
 See [docs/architecture/repository-structure.md](docs/architecture/repository-structure.md) for the production folder architecture and ownership rules.
