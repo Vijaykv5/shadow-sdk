@@ -20,3 +20,8 @@ no-log-ix-name = []
 
 [dependencies]
 anchor-lang.workspace = true
+
+[dev-dependencies]
+solana-program-test = "=2.2.1"
+solana-sdk.workspace = true
+tokio.workspace = true

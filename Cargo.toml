@@ -6,6 +6,7 @@ members = [
     "crates/relayer-client",
     "crates/stealth",
     "programs/stealth-vault",
+    "services/relayer",
 ]
 
 [workspace.package]
@@ -21,6 +22,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1"
 anchor-lang = "=0.31.1"
 clap = "4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 solana-client = "=2.2.1"
 solana-sdk = "=2.2.1"
 shellexpand = "3"

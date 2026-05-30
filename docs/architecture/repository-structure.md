@@ -27,7 +27,7 @@ shadow-sdk/
 
 `cli/` is the operator/developer command-line tool. Keep it thin; real logic should live in `crates/`.
 
-`services/relayer/` is for the first long-running infrastructure service. Add more service folders only when they become real deployable binaries.
+`services/relayer/` is for the first infrastructure worker. The current relayer verifies a private payload file against an on-chain intent hash and marks the intent executed. Add more service folders only when they become real deployable binaries.
 
 `idl/` is for stable, checked-in Anchor IDLs that SDK users can consume. Anchor build output still goes to `target/idl`.
 

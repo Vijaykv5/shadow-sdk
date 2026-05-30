@@ -176,6 +176,21 @@ cargo run -p shadow-cli -- execute-intent \
   --nonce 1
 ```
 
+Or use the relayer to verify a private payload file before marking the intent executed:
+
+```bash
+cargo run -p shadow-relayer -- hash-payload --payload examples/mock-intent.json
+```
+
+Submit the printed `payload hash`, then execute once:
+
+```bash
+cargo run -p shadow-relayer -- execute-once \
+  --owner <OWNER_PUBKEY> \
+  --executor-keypair ~/.config/solana/ephemeral.json \
+  --payload examples/mock-intent.json
+```
+
 Cancel a pending intent as the owner:
 
 ```bash
@@ -189,4 +204,28 @@ cargo run -p shadow-cli -- cancel-intent \
   --owner <OWNER_PUBKEY> \
   --authority-keypair ~/.config/solana/ephemeral.json \
   --nonce 1
+```
+
+## Tests
+
+Run the SBF build before integration tests so `solana-program-test` can load the latest compiled program:
+
+```bash
+anchor build
+cargo test -p stealth-vault --test lifecycle
+```
+
+The lifecycle integration tests cover:
+
+- vault initialization stores the owner and ephemeral authority
+- submitting an intent creates a pending intent
+- executing an intent marks it executed
+- cancelling an intent marks it cancelled
+- wrong authorities cannot submit or execute
+- cancelled/executed intents cannot change terminal state again
+
+Run all Rust tests with:
+
+```bash
+cargo test
 ```

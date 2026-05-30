@@ -1,0 +1,18 @@
+[package]
+name = "shadow-relayer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+anchor-lang.workspace = true
+clap = { workspace = true, features = ["derive"] }
+serde.workspace = true
+serde_json.workspace = true
+shadow-stealth = { path = "../../crates/stealth" }
+shellexpand.workspace = true
+solana-client.workspace = true
+solana-sdk.workspace = true
+stealth-vault = { path = "../../programs/stealth-vault", features = ["no-entrypoint"] }
