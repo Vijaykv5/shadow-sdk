@@ -36,7 +36,7 @@ use solana_sdk::{
     transaction::Transaction,
 };
 
-pub const STEALTH_VAULT_PROGRAM_ID_STRING: &str = "4XmHzu3kxf3oyD2bchUmkDKoq2QADHkP13Zcv1hsS5X5";
+pub const STEALTH_VAULT_PROGRAM_ID_STRING: &str = "3Nz8wUHewqpMuceSLnoeTMyPLaDt9kNzsVMWTCeVMD6M";
 pub const VAULT_SEED: &[u8] = b"vault";
 pub const INTENT_SEED: &[u8] = b"intent";
 pub const INTENT_STATUS_PENDING: u8 = 0;

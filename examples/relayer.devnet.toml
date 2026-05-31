@@ -1,0 +1,7 @@
+cluster = "devnet"
+owner = "11111111111111111111111111111111"
+executor_keypair = "~/.config/solana/ephemeral.json"
+payload = "examples/mock-intent.json"
+payload_dir = "payloads"
+poll_seconds = 5
+max_retries = 3

@@ -48,6 +48,7 @@ import {
   type ExecutionIntentAccount,
   type Cluster,
   type ExecutionRoute,
+  type MagicBlockValidator,
   type RelayerQueuedIntent,
   type VaultAccount
 } from "@/lib/shadow";
@@ -59,6 +60,19 @@ import {
 
 const QUEUE_KEY = "shadow-sdk.intent-queue";
 const DEVNET_DEPLOY_WALLET = "2eDJJZydDTV4HQmbtX6YwhrdfCW7XU3zms9538HGqkuB";
+const ROUTE_OPTIONS: Array<Exclude<ExecutionRoute["kind"], "public_rpc">> = [
+  "mock_private_bundle",
+  "jito_bundle",
+  "magicblock_er",
+  "magicblock_per"
+];
+const MAGICBLOCK_VALIDATOR_OPTIONS: MagicBlockValidator[] = [
+  "local_er",
+  "devnet_asia",
+  "devnet_eu",
+  "devnet_us",
+  "devnet_tee"
+];
 
 type ComposerState = {
   kind: IntentKind;
@@ -77,6 +91,8 @@ type ComposerState = {
   perpsClientOrderId: string;
   routeKind: ExecutionRoute["kind"];
   tipLamports: number;
+  magicBlockValidator: MagicBlockValidator;
+  commitFrequencyMs: number;
 };
 
 const initialComposer: ComposerState = {
@@ -95,11 +111,13 @@ const initialComposer: ComposerState = {
   perpsReduceOnly: false,
   perpsClientOrderId: "shadow-demo-1",
   routeKind: "mock_private_bundle",
-  tipLamports: 5000
+  tipLamports: 5000,
+  magicBlockValidator: "devnet_tee",
+  commitFrequencyMs: 30000
 };
 
 export function ShadowConsole() {
-  const [cluster, setCluster] = useState<Cluster>("localnet");
+  const [cluster, setCluster] = useState<Cluster>("devnet");
   const [walletAddress, setWalletAddress] = useState("");
   const [owner, setOwner] = useState("");
   const [ephemeralAuthority, setEphemeralAuthority] = useState("");
@@ -196,6 +214,7 @@ export function ShadowConsole() {
   const runRelayerCommand = useMemo(() => {
     return [
       "cargo run -p shadow-relayer -- serve \\",
+      "  --cluster devnet \\",
       `  --executor-keypair ${executorKeypair} \\`,
       "  --bind 127.0.0.1:8787"
     ].join("\n");
@@ -507,7 +526,6 @@ export function ShadowConsole() {
             value={cluster}
             onChange={(event) => setCluster(event.target.value as Cluster)}
           >
-            <option value="localnet">Localnet</option>
             <option value="devnet">Devnet</option>
           </select>
           <button className="button button-primary" type="button" onClick={openWalletPicker}>
@@ -993,10 +1011,7 @@ function buildPayload(composer: ComposerState): IntentPayload {
         reduce_only: composer.perpsReduceOnly,
         client_order_id: composer.perpsClientOrderId
       },
-      route: {
-        kind: composer.routeKind,
-        tip_lamports: Number(composer.tipLamports)
-      } as ExecutionRoute
+      route: buildExecutionRoute(composer)
     };
   }
 
@@ -1006,6 +1021,36 @@ function buildPayload(composer: ComposerState): IntentPayload {
     payload: {
       message: composer.mockMessage
     }
+  };
+}
+
+function buildExecutionRoute(composer: ComposerState): ExecutionRoute {
+  if (composer.routeKind === "jito_bundle") {
+    return {
+      kind: "jito_bundle",
+      tip_lamports: Number(composer.tipLamports)
+    };
+  }
+
+  if (composer.routeKind === "magicblock_er") {
+    return {
+      kind: "magicblock_er",
+      validator: composer.magicBlockValidator,
+      commit_frequency_ms: Number(composer.commitFrequencyMs)
+    };
+  }
+
+  if (composer.routeKind === "magicblock_per") {
+    return {
+      kind: "magicblock_per",
+      validator: "devnet_tee",
+      commit_frequency_ms: Number(composer.commitFrequencyMs)
+    };
+  }
+
+  return {
+    kind: "mock_private_bundle",
+    tip_lamports: Number(composer.tipLamports)
   };
 }
 
@@ -1084,14 +1129,43 @@ function ComposerFields({
           <SelectField
             label="Route"
             value={composer.routeKind}
-            options={["mock_private_bundle", "jito_bundle"]}
+            options={ROUTE_OPTIONS}
             onChange={(routeKind) => setComposer((value) => ({ ...value, routeKind }))}
           />
-          <NumberField
-            label="Tip lamports"
-            value={composer.tipLamports}
-            onChange={(tipLamports) => setComposer((value) => ({ ...value, tipLamports }))}
-          />
+          {composer.routeKind === "mock_private_bundle" || composer.routeKind === "jito_bundle" ? (
+            <NumberField
+              label="Tip lamports"
+              value={composer.tipLamports}
+              onChange={(tipLamports) => setComposer((value) => ({ ...value, tipLamports }))}
+            />
+          ) : null}
+          {composer.routeKind === "magicblock_er" ? (
+            <SelectField
+              label="MagicBlock validator"
+              value={composer.magicBlockValidator}
+              options={MAGICBLOCK_VALIDATOR_OPTIONS}
+              onChange={(magicBlockValidator) =>
+                setComposer((value) => ({ ...value, magicBlockValidator }))
+              }
+            />
+          ) : null}
+          {composer.routeKind === "magicblock_per" ? (
+            <Field
+              label="MagicBlock TEE"
+              value="devnet_tee"
+              onChange={() => undefined}
+              readOnly
+            />
+          ) : null}
+          {composer.routeKind === "magicblock_er" || composer.routeKind === "magicblock_per" ? (
+            <NumberField
+              label="Commit ms"
+              value={composer.commitFrequencyMs}
+              onChange={(commitFrequencyMs) =>
+                setComposer((value) => ({ ...value, commitFrequencyMs }))
+              }
+            />
+          ) : null}
           <Field
             label="Client order id"
             value={composer.perpsClientOrderId}
@@ -1165,6 +1239,7 @@ function Field({
   onChange,
   placeholder,
   error,
+  readOnly = false,
   type = "text"
 }: {
   label: string;
@@ -1172,6 +1247,7 @@ function Field({
   onChange: (value: string) => void;
   placeholder?: string;
   error?: string;
+  readOnly?: boolean;
   type?: string;
 }) {
   const id = label.toLowerCase().replaceAll(" ", "-");
@@ -1183,6 +1259,7 @@ function Field({
         type={type}
         value={value}
         placeholder={placeholder}
+        readOnly={readOnly}
         onChange={(event) => onChange(event.target.value)}
       />
       {error ? <em>{error}</em> : null}

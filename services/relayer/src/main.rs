@@ -678,7 +678,7 @@ fn resolve_execute_once_config(args: ExecuteOnceArgs) -> Result<ExecuteOnceConfi
     let cluster = args
         .cluster
         .or(file_config.cluster)
-        .unwrap_or(Cluster::Localnet);
+        .unwrap_or(Cluster::Devnet);
     let rpc_url = args
         .rpc_url
         .or(file_config.rpc_url)
@@ -700,7 +700,7 @@ fn resolve_run_config(args: RunArgs) -> Result<RunConfig> {
     let cluster = args
         .cluster
         .or(file_config.cluster)
-        .unwrap_or(Cluster::Localnet);
+        .unwrap_or(Cluster::Devnet);
     let rpc_url = args
         .rpc_url
         .or(file_config.rpc_url)
@@ -728,7 +728,7 @@ fn resolve_serve_config(args: ServeArgs) -> Result<ServeConfig> {
     let cluster = args
         .cluster
         .or(file_config.cluster)
-        .unwrap_or(Cluster::Localnet);
+        .unwrap_or(Cluster::Devnet);
     let rpc_url = args
         .rpc_url
         .or(file_config.rpc_url)

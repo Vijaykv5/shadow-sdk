@@ -2,6 +2,12 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 
+pub const MAGICBLOCK_LOCAL_ER_VALIDATOR: &str = "mAGicPQYBMvcYveUZA5F5UNNwyHvfYh5xkLS2Fr1mev";
+pub const MAGICBLOCK_DEVNET_ASIA_VALIDATOR: &str = "MAS1Dt9qreoRMQ14YQuhg8UTZMMzDdKhmkZMECCzk57";
+pub const MAGICBLOCK_DEVNET_EU_VALIDATOR: &str = "MEUGGrYPxKk17hCr7wpT6s8dtNokZj5U2L57vjYMS8e";
+pub const MAGICBLOCK_DEVNET_US_VALIDATOR: &str = "MUS3hc9TCw4cGC12vHNoYcCGzJG1txjgQLZWVoeNHNd";
+pub const MAGICBLOCK_DEVNET_TEE_VALIDATOR: &str = "MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo";
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct IntentPayload {
     pub nonce: u64,
@@ -45,8 +51,29 @@ pub enum OrderSide {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutionRoute {
     PublicRpc,
-    MockPrivateBundle { tip_lamports: u64 },
-    JitoBundle { tip_lamports: u64 },
+    MockPrivateBundle {
+        tip_lamports: u64,
+    },
+    JitoBundle {
+        tip_lamports: u64,
+    },
+    MagicBlockEr {
+        validator: MagicBlockValidator,
+        commit_frequency_ms: u32,
+    },
+    MagicBlockPer {
+        validator: MagicBlockValidator,
+        commit_frequency_ms: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MagicBlockValidator {
+    LocalEr,
+    DevnetAsia,
+    DevnetEu,
+    DevnetUs,
+    DevnetTee,
 }
 
 pub fn parse_payload_action(intent: &IntentPayload) -> Result<PayloadAction> {
@@ -156,6 +183,8 @@ pub fn parse_execution_route(intent: &IntentPayload) -> Result<ExecutionRoute> {
     struct RoutePayload {
         kind: String,
         tip_lamports: Option<u64>,
+        validator: Option<String>,
+        commit_frequency_ms: Option<u32>,
     }
 
     let route = serde_json::from_value::<RoutePayload>(route.clone())
@@ -176,8 +205,61 @@ pub fn parse_execution_route(intent: &IntentPayload) -> Result<ExecutionRoute> {
             );
             Ok(ExecutionRoute::JitoBundle { tip_lamports })
         }
+        "magicblock_er" => {
+            let validator = parse_magicblock_validator(
+                route
+                    .validator
+                    .as_deref()
+                    .unwrap_or("local_er"),
+            )?;
+            let commit_frequency_ms = route.commit_frequency_ms.unwrap_or(30_000);
+            anyhow::ensure!(
+                commit_frequency_ms > 0,
+                "magicblock_er commit_frequency_ms must be greater than zero"
+            );
+
+            Ok(ExecutionRoute::MagicBlockEr {
+                validator,
+                commit_frequency_ms,
+            })
+        }
+        "magicblock_per" => {
+            let validator = parse_magicblock_validator(
+                route
+                    .validator
+                    .as_deref()
+                    .context("magicblock_per route requires `validator`")?,
+            )?;
+            anyhow::ensure!(
+                validator.is_tee(),
+                "magicblock_per requires a TEE validator such as `devnet_tee`"
+            );
+            let commit_frequency_ms = route.commit_frequency_ms.unwrap_or(30_000);
+            anyhow::ensure!(
+                commit_frequency_ms > 0,
+                "magicblock_per commit_frequency_ms must be greater than zero"
+            );
+
+            Ok(ExecutionRoute::MagicBlockPer {
+                validator,
+                commit_frequency_ms,
+            })
+        }
         other => anyhow::bail!(
-            "unsupported execution route `{other}`; supported routes are `public_rpc`, `mock_private_bundle`, and `jito_bundle`"
+            "unsupported execution route `{other}`; supported routes are `public_rpc`, `mock_private_bundle`, `jito_bundle`, `magicblock_er`, and `magicblock_per`"
+        ),
+    }
+}
+
+fn parse_magicblock_validator(value: &str) -> Result<MagicBlockValidator> {
+    match value {
+        "local_er" | MAGICBLOCK_LOCAL_ER_VALIDATOR => Ok(MagicBlockValidator::LocalEr),
+        "devnet_asia" | MAGICBLOCK_DEVNET_ASIA_VALIDATOR => Ok(MagicBlockValidator::DevnetAsia),
+        "devnet_eu" | MAGICBLOCK_DEVNET_EU_VALIDATOR => Ok(MagicBlockValidator::DevnetEu),
+        "devnet_us" | MAGICBLOCK_DEVNET_US_VALIDATOR => Ok(MagicBlockValidator::DevnetUs),
+        "devnet_tee" | MAGICBLOCK_DEVNET_TEE_VALIDATOR => Ok(MagicBlockValidator::DevnetTee),
+        other => anyhow::bail!(
+            "unsupported MagicBlock validator `{other}`; supported validators are `local_er`, `devnet_asia`, `devnet_eu`, `devnet_us`, and `devnet_tee`"
         ),
     }
 }
@@ -208,7 +290,35 @@ impl ExecutionRoute {
             Self::PublicRpc => "public_rpc",
             Self::MockPrivateBundle { .. } => "mock_private_bundle",
             Self::JitoBundle { .. } => "jito_bundle",
+            Self::MagicBlockEr { .. } => "magicblock_er",
+            Self::MagicBlockPer { .. } => "magicblock_per",
         }
+    }
+}
+
+impl MagicBlockValidator {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LocalEr => "local_er",
+            Self::DevnetAsia => "devnet_asia",
+            Self::DevnetEu => "devnet_eu",
+            Self::DevnetUs => "devnet_us",
+            Self::DevnetTee => "devnet_tee",
+        }
+    }
+
+    pub fn pubkey(self) -> &'static str {
+        match self {
+            Self::LocalEr => MAGICBLOCK_LOCAL_ER_VALIDATOR,
+            Self::DevnetAsia => MAGICBLOCK_DEVNET_ASIA_VALIDATOR,
+            Self::DevnetEu => MAGICBLOCK_DEVNET_EU_VALIDATOR,
+            Self::DevnetUs => MAGICBLOCK_DEVNET_US_VALIDATOR,
+            Self::DevnetTee => MAGICBLOCK_DEVNET_TEE_VALIDATOR,
+        }
+    }
+
+    pub fn is_tee(self) -> bool {
+        matches!(self, Self::DevnetTee)
     }
 }
 

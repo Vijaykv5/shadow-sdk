@@ -16,26 +16,24 @@ The first implemented path is the stealth vault layer:
 
 See [docs/architecture/repository-structure.md](docs/architecture/repository-structure.md) for the production folder architecture and ownership rules.
 
-## Local Demo
+## Devnet Demo
 
-After starting a local validator and deploying the Anchor program:
+Shadow SDK now defaults to devnet for the Anchor provider, web console, CLI
+examples, and relayer config:
 
 ```bash
-solana-test-validator
+solana config set --url devnet
 anchor build
-anchor deploy --provider.cluster localnet
+anchor deploy
 ```
 
-Create a fresh happy-path demo:
+Check the deployed program:
 
 ```bash
-cargo run -p shadow-cli -- demo-local
+solana program show 3Nz8wUHewqpMuceSLnoeTMyPLaDt9kNzsVMWTCeVMD6M --url devnet
 ```
 
-The command generates owner and ephemeral-authority keypairs under
-`target/shadow-demo/`, airdrops local SOL, creates a vault, submits a mock
-intent hash, writes the matching payload, and prints the exact relayer `serve`
-command plus `curl` request for `POST /execute-once`.
+Use `examples/relayer.devnet.toml` for relayer commands.
 
 ## Rust Crates
 

@@ -1,9 +1,10 @@
 {
-  "address": "4XmHzu3kxf3oyD2bchUmkDKoq2QADHkP13Zcv1hsS5X5",
+  "address": "3Nz8wUHewqpMuceSLnoeTMyPLaDt9kNzsVMWTCeVMD6M",
   "metadata": {
     "name": "stealth_vault",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "spec": "0.1.0",
+    "description": "Anchor program interface for Shadow SDK stealth vaults and hashed execution intents",
     "repository": "https://github.com/Vijaykv5/shadow-sdk"
   },
   "instructions": [

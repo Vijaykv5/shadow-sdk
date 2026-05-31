@@ -1,7 +1,8 @@
 # Shadow SDK Web Console
 
-Next.js operator console for composing private intent payloads, submitting matching
-intent hashes on-chain, and handing the private payload to the relayer API.
+Next.js operator console for composing private intent payloads on devnet,
+submitting matching intent hashes on-chain, and handing the private payload to
+the relayer API.
 
 ## Run
 
@@ -29,6 +30,7 @@ NEXT_PUBLIC_RELAYER_URL=http://127.0.0.1:8787 npm run dev
 
 ```bash
 cargo run -p shadow-relayer -- serve \
+  --cluster devnet \
   --executor-keypair ~/.config/solana/ephemeral.json \
   --bind 127.0.0.1:8787
 ```

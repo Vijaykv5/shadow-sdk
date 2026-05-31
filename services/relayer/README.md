@@ -64,7 +64,7 @@ The relayer hashes the exact payload file bytes with Solana's hash function. Sub
 You can pass repeated relayer settings with CLI flags or a TOML config file:
 
 ```toml
-cluster = "localnet"
+cluster = "devnet"
 owner = "<OWNER_PUBKEY>"
 executor_keypair = "~/.config/solana/ephemeral.json"
 payload = "examples/mock-intent.json"
@@ -76,7 +76,7 @@ max_retries = 3
 CLI flags override config values:
 
 ```bash
-cargo run -p shadow-relayer -- run --config examples/relayer.localnet.toml --watch
+cargo run -p shadow-relayer -- run --config examples/relayer.devnet.toml --watch
 ```
 
 Create the queue folders:
@@ -101,7 +101,7 @@ Verify and execute one pending intent:
 
 ```bash
 cargo run -p shadow-relayer -- execute-once \
-  --config examples/relayer.localnet.toml \
+  --config examples/relayer.devnet.toml \
   --owner <OWNER_PUBKEY> \
   --executor-keypair ~/.config/solana/ephemeral.json \
   --payload examples/mock-intent.json
@@ -115,7 +115,7 @@ For app integrations, run the relayer as a stateless HTTP backend:
 
 ```bash
 cargo run -p shadow-relayer -- serve \
-  --config examples/relayer.localnet.toml \
+  --config examples/relayer.devnet.toml \
   --executor-keypair ~/.config/solana/ephemeral.json \
   --bind 127.0.0.1:8787
 ```
@@ -156,7 +156,7 @@ HTTP intents in Postgres:
 ```bash
 export DATABASE_URL="postgresql://<USER>:<PASSWORD>@<HOST>/<DATABASE>?sslmode=require"
 cargo run -p shadow-relayer -- serve \
-  --config examples/relayer.localnet.toml \
+  --config examples/relayer.devnet.toml \
   --executor-keypair ~/.config/solana/ephemeral.json \
   --bind 127.0.0.1:8787
 ```
@@ -251,7 +251,7 @@ Run one directory scan and execute every matching pending intent:
 
 ```bash
 cargo run -p shadow-relayer -- run \
-  --config examples/relayer.localnet.toml \
+  --config examples/relayer.devnet.toml \
   --owner <OWNER_PUBKEY> \
   --executor-keypair ~/.config/solana/ephemeral.json \
   --payload-dir payloads \

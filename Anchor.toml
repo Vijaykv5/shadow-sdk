@@ -6,7 +6,7 @@ seeds = false
 skip-lint = false
 
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
@@ -14,7 +14,7 @@ test = "cargo test --workspace"
 
 # Add program addresses here as Anchor programs are introduced:
 [programs.localnet]
-stealth_vault = "4XmHzu3kxf3oyD2bchUmkDKoq2QADHkP13Zcv1hsS5X5"
+stealth_vault = "3Nz8wUHewqpMuceSLnoeTMyPLaDt9kNzsVMWTCeVMD6M"
 
 [programs.devnet]
-stealth_vault = "4XmHzu3kxf3oyD2bchUmkDKoq2QADHkP13Zcv1hsS5X5"
+stealth_vault = "3Nz8wUHewqpMuceSLnoeTMyPLaDt9kNzsVMWTCeVMD6M"

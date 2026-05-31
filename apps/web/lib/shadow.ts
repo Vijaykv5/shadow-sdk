@@ -8,7 +8,7 @@ import {
 import { Buffer } from "buffer";
 
 export const STEALTH_VAULT_PROGRAM_ID = new PublicKey(
-  "4XmHzu3kxf3oyD2bchUmkDKoq2QADHkP13Zcv1hsS5X5"
+  "3Nz8wUHewqpMuceSLnoeTMyPLaDt9kNzsVMWTCeVMD6M"
 );
 
 export type IntentKind = "mock_execution" | "system_transfer" | "perps_order";
@@ -38,7 +38,32 @@ export type PerpsPayload = {
 export type ExecutionRoute =
   | { kind: "public_rpc" }
   | { kind: "mock_private_bundle"; tip_lamports: number }
-  | { kind: "jito_bundle"; tip_lamports: number };
+  | { kind: "jito_bundle"; tip_lamports: number }
+  | {
+      kind: "magicblock_er";
+      validator: MagicBlockValidator;
+      commit_frequency_ms: number;
+    }
+  | {
+      kind: "magicblock_per";
+      validator: MagicBlockValidator;
+      commit_frequency_ms: number;
+    };
+
+export type MagicBlockValidator =
+  | "local_er"
+  | "devnet_asia"
+  | "devnet_eu"
+  | "devnet_us"
+  | "devnet_tee";
+
+export const MAGICBLOCK_VALIDATORS: Record<MagicBlockValidator, string> = {
+  local_er: "mAGicPQYBMvcYveUZA5F5UNNwyHvfYh5xkLS2Fr1mev",
+  devnet_asia: "MAS1Dt9qreoRMQ14YQuhg8UTZMMzDdKhmkZMECCzk57",
+  devnet_eu: "MEUGGrYPxKk17hCr7wpT6s8dtNokZj5U2L57vjYMS8e",
+  devnet_us: "MUS3hc9TCw4cGC12vHNoYcCGzJG1txjgQLZWVoeNHNd",
+  devnet_tee: "MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo"
+};
 
 export type IntentPayload = {
   nonce: number;

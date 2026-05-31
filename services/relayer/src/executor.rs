@@ -26,7 +26,7 @@ pub fn execute_payload_action(
                     route,
                     ExecutionRoute::PublicRpc | ExecutionRoute::MockPrivateBundle { .. }
                 ),
-                "system_transfer does not support jito_bundle route yet"
+                "system_transfer only supports public_rpc and mock_private_bundle routes until route adapters are wired"
             );
             let from = executor.pubkey();
             let instruction = system_instruction::transfer(&from, to, *lamports);
@@ -83,6 +83,34 @@ fn execute_perps_order(order: &PerpsOrder, route: &ExecutionRoute) -> Result<()>
         (PerpsVenue::Drift, ExecutionRoute::JitoBundle { tip_lamports }) => {
             anyhow::bail!(
                 "drift perps execution over jito_bundle is schema-ready but not wired to a Drift/Jito adapter yet; requested tip_lamports={tip_lamports}"
+            )
+        }
+        (
+            _,
+            ExecutionRoute::MagicBlockEr {
+                validator,
+                commit_frequency_ms,
+            },
+        ) => {
+            anyhow::bail!(
+                "MagicBlock ER route accepted for validator={} ({}) with commit_frequency_ms={}, but the stealth-vault program still needs MagicBlock delegation/commit hooks before relayer execution can route through ER",
+                validator.label(),
+                validator.pubkey(),
+                commit_frequency_ms
+            )
+        }
+        (
+            _,
+            ExecutionRoute::MagicBlockPer {
+                validator,
+                commit_frequency_ms,
+            },
+        ) => {
+            anyhow::bail!(
+                "MagicBlock PER route accepted for TEE validator={} ({}) with commit_frequency_ms={}, but the stealth-vault program still needs Permission Program and delegation hooks before private ER execution is wired",
+                validator.label(),
+                validator.pubkey(),
+                commit_frequency_ms
             )
         }
         (PerpsVenue::Drift, ExecutionRoute::MockPrivateBundle { .. }) => {
