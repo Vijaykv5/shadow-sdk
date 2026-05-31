@@ -137,7 +137,8 @@ export type RelayerQueuedIntent = {
 };
 
 export const DEFAULT_RELAYER_URL =
-  process.env.NEXT_PUBLIC_RELAYER_URL ?? "http://127.0.0.1:8787";
+  process.env.NEXT_PUBLIC_RELAYER_URL ??
+  (process.env.NODE_ENV === "production" ? "" : "http://127.0.0.1:8787");
 
 const DISCRIMINATORS = {
   initializeVault: Uint8Array.from([48, 191, 163, 44, 71, 129, 63, 164]),
@@ -456,6 +457,10 @@ async function relayerRequest<T>(
   path: string,
   init?: RequestInit
 ): Promise<T> {
+  if (!relayerUrl.trim()) {
+    throw new Error("Set NEXT_PUBLIC_RELAYER_URL to your hosted relayer URL before using relayer actions");
+  }
+
   const response = await fetch(`${relayerUrl.replace(/\/$/, "")}${path}`, init);
   const result = (await response.json()) as T & { error?: string };
 

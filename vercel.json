@@ -4,10 +4,6 @@
       "root": "apps/web",
       "routePrefix": "/",
       "framework": "nextjs"
-    },
-    "relayer": {
-      "root": "services/relayer",
-      "routePrefix": "/_/relayer"
     }
   }
 }
