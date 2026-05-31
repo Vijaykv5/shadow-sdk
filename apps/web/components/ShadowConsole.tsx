@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  Activity,
   AlertCircle,
   ArrowRight,
   Check,
@@ -9,6 +8,7 @@ import {
   Copy,
   FileJson,
   KeyRound,
+  LogOut,
   Loader2,
   RadioTower,
   RefreshCw,
@@ -253,6 +253,22 @@ export function ShadowConsole() {
 
   function openWalletPicker() {
     setWalletModalVisible(true);
+  }
+
+  async function disconnectWallet() {
+    try {
+      await wallet.disconnect();
+      setVaultAccount(null);
+      setIntentAccount(null);
+      setPersistedIntent(null);
+      setRelayerResult(null);
+      setTxMessage("");
+      setRelayerMessage("");
+      showToast("info", "Wallet disconnected");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to disconnect wallet";
+      showToast("error", "Disconnect failed", message);
+    }
   }
 
   async function sendWalletTransaction(transaction: Transaction, signerAddress: string) {
@@ -624,9 +640,7 @@ export function ShadowConsole() {
                 </button>
                 <a
                   className="inline-flex min-h-11 items-center justify-center rounded-md border border-stone-700 bg-stone-900/70 px-5 py-3 font-semibold text-stone-100 transition hover:border-stone-500 focus-visible:ring-2 focus-visible:ring-lime-200 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-950"
-                  href="https://github.com/Vijaykv5/shadow-sdk#readme"
-                  rel="noreferrer"
-                  target="_blank"
+                  href="/docs"
                 >
                   Docs
                 </a>
@@ -674,14 +688,24 @@ export function ShadowConsole() {
             </div>
             <h1 className="mt-2 text-3xl font-semibold tracking-normal text-stone-50 sm:text-4xl">Vault setup</h1>
           </div>
-          <button
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-stone-700 bg-stone-900 px-4 py-3 font-semibold text-stone-100 focus-visible:ring-2 focus-visible:ring-lime-200 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-950"
-            type="button"
-            onClick={openWalletPicker}
-          >
-            <Wallet aria-hidden="true" />
-            {shortAddress(walletAddress)}
-          </button>
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <button
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-stone-700 bg-stone-900 px-4 py-3 font-semibold text-stone-100 transition hover:border-stone-500 focus-visible:ring-2 focus-visible:ring-lime-200 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-950"
+              type="button"
+              onClick={openWalletPicker}
+            >
+              <Wallet aria-hidden="true" />
+              {shortAddress(walletAddress)}
+            </button>
+            <button
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-stone-700 bg-stone-950 px-4 py-3 font-semibold text-stone-300 transition hover:border-red-300/50 hover:text-red-100 focus-visible:ring-2 focus-visible:ring-lime-200 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-950"
+              type="button"
+              onClick={disconnectWallet}
+            >
+              <LogOut aria-hidden="true" />
+              Disconnect
+            </button>
+          </div>
         </header>
 
         {txMessage ? (

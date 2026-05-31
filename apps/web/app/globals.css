@@ -30,6 +30,15 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .spin {
     animation: spin 0.8s linear infinite;

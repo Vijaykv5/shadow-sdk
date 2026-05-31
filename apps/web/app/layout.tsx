@@ -13,7 +13,12 @@ const cause = localFont({
 
 export const metadata: Metadata = {
   title: "Shadow SDK Console",
-  description: "Private Solana intent execution console"
+  description: "Private Solana intent execution console",
+  icons: {
+    icon: "/logo/logo.png",
+    shortcut: "/logo/logo.png",
+    apple: "/logo/logo.png"
+  }
 };
 
 export default function RootLayout({
