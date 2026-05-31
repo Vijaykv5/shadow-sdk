@@ -3934,7 +3934,7 @@ dependencies = [
 
 [[package]]
 name = "shadow-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3946,7 +3946,7 @@ dependencies = [
 
 [[package]]
 name = "shadow-relayer"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anchor-lang",
  "anyhow",
@@ -3963,7 +3963,7 @@ dependencies = [
 
 [[package]]
 name = "shadow-stealth"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -6995,7 +6995,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stealth-vault"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anchor-lang",
  "solana-program-test",
