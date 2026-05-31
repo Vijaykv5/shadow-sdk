@@ -4356,6 +4356,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "dotenvy",
  "serde",
  "serde_json",
  "shadow-stealth",

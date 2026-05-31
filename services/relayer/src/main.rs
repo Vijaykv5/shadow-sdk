@@ -22,7 +22,10 @@ use axum::{
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
-use shadow_stealth::{derive_intent_pda, derive_vault_pda, execute_intent};
+use shadow_stealth::{
+    derive_intent_pda, derive_vault_pda, execute_intent, payload_hash_from_hex,
+    submit_execution_intent,
+};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -235,22 +238,43 @@ struct ApiState {
 
 #[derive(Debug, Deserialize)]
 struct ExecuteOnceRequest {
+    #[serde(deserialize_with = "deserialize_pubkey")]
     owner: Pubkey,
     payload: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
 struct EnqueueIntentRequest {
+    #[serde(deserialize_with = "deserialize_pubkey")]
     owner: Pubkey,
     payload: serde_json::Value,
 }
 
+#[derive(Debug, Deserialize)]
+struct SubmitIntentRequest {
+    #[serde(deserialize_with = "deserialize_pubkey")]
+    owner: Pubkey,
+    nonce: u64,
+    payload_hash: String,
+}
+
 #[derive(Debug, Serialize)]
 struct ExecuteOnceResponse {
-    intent: Pubkey,
-    vault: Pubkey,
-    owner: Pubkey,
-    executor: Pubkey,
+    intent: String,
+    vault: String,
+    owner: String,
+    executor: String,
+    nonce: u64,
+    signature: String,
+    payload_hash: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SubmitIntentResponse {
+    intent: String,
+    vault: String,
+    owner: String,
+    ephemeral_authority: String,
     nonce: u64,
     signature: String,
     payload_hash: String,
@@ -259,7 +283,7 @@ struct ExecuteOnceResponse {
 #[derive(Debug, Clone, Serialize)]
 struct QueuedIntentResponse {
     id: String,
-    owner: Pubkey,
+    owner: String,
     nonce: u64,
     status: QueuedIntentStatus,
     payload_hash: String,
@@ -314,6 +338,8 @@ struct ApiError {
 }
 
 fn main() -> Result<()> {
+    load_env_files();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -328,6 +354,19 @@ fn main() -> Result<()> {
             runtime.block_on(handle_serve(args))
         }
     }
+}
+
+fn load_env_files() {
+    let _ = dotenvy::dotenv();
+    let _ = dotenvy::from_path("services/relayer/.env");
+}
+
+fn deserialize_pubkey<'de, D>(deserializer: D) -> std::result::Result<Pubkey, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    Pubkey::from_str(&value).map_err(serde::de::Error::custom)
 }
 
 fn handle_hash_payload(args: PayloadArgs) -> Result<()> {
@@ -463,6 +502,7 @@ async fn handle_serve(args: ServeArgs) -> Result<()> {
     };
     let app = Router::new()
         .route("/health", get(health))
+        .route("/submit-intent", post(submit_intent_http))
         .route("/execute-once", post(execute_once_http))
         .route("/intents", post(enqueue_intent_http))
         .route("/intents/:id", get(get_intent_http))
@@ -481,6 +521,42 @@ async fn handle_serve(args: ServeArgs) -> Result<()> {
 
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
+}
+
+async fn submit_intent_http(
+    State(state): State<ApiState>,
+    Json(request): Json<SubmitIntentRequest>,
+) -> Result<Json<SubmitIntentResponse>, ApiError> {
+    let rpc_client = Arc::clone(&state.rpc_client);
+    let rpc_url = state.rpc_url.clone();
+    let executor = Arc::clone(&state.executor);
+
+    let response = tokio::task::spawn_blocking(move || {
+        let payload_hash = payload_hash_from_hex(&request.payload_hash)?;
+        let result = submit_execution_intent(
+            &rpc_client,
+            request.owner,
+            executor.as_ref(),
+            request.nonce,
+            payload_hash,
+        )
+        .with_context(|| format!("failed to submit execution intent on {rpc_url}"))?;
+
+        Ok::<_, anyhow::Error>(SubmitIntentResponse {
+            intent: result.intent.to_string(),
+            vault: result.vault.to_string(),
+            owner: result.owner.to_string(),
+            ephemeral_authority: result.ephemeral_authority.to_string(),
+            nonce: result.nonce,
+            signature: result.signature.to_string(),
+            payload_hash: format_hash(&result.payload_hash),
+        })
+    })
+    .await
+    .map_err(|err| ApiError::bad_request(anyhow::anyhow!("relayer worker task failed: {err}")))?
+    .map_err(ApiError::bad_request)?;
+
+    Ok(Json(response))
 }
 
 async fn init_queue_store() -> Result<QueueStore> {
@@ -555,10 +631,10 @@ async fn execute_once_http(
             .with_context(|| format!("failed to execute intent on {rpc_url}"))?;
 
         Ok::<_, anyhow::Error>(ExecuteOnceResponse {
-            intent: result.intent,
-            vault: result.vault,
-            owner: result.owner,
-            executor: result.executor,
+            intent: result.intent.to_string(),
+            vault: result.vault.to_string(),
+            owner: result.owner.to_string(),
+            executor: result.executor.to_string(),
             nonce: result.nonce,
             signature: result.signature.to_string(),
             payload_hash: format_hash(&loaded.hash),
@@ -1352,7 +1428,7 @@ impl QueuedIntent {
     fn to_response(&self) -> QueuedIntentResponse {
         QueuedIntentResponse {
             id: self.id.clone(),
-            owner: self.owner,
+            owner: self.owner.to_string(),
             nonce: self.nonce,
             status: self.status,
             payload_hash: self.payload_hash.clone(),

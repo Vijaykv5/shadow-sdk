@@ -44,6 +44,7 @@ import {
   QueueItem,
   shortAddress,
   STEALTH_VAULT_PROGRAM_ID,
+  submitIntentWithRelayer,
   validatePubkey,
   type ExecutionIntentAccount,
   type Cluster,
@@ -60,6 +61,7 @@ import {
 
 const QUEUE_KEY = "shadow-sdk.intent-queue";
 const DEVNET_DEPLOY_WALLET = "2eDJJZydDTV4HQmbtX6YwhrdfCW7XU3zms9538HGqkuB";
+const DEVNET_EPHEMERAL_AUTHORITY = "2ED9SNAYgWN5WU7sKkhZqp1baytvcKQqoNsTwSPZpuVk";
 const ROUTE_OPTIONS: Array<Exclude<ExecutionRoute["kind"], "public_rpc">> = [
   "mock_private_bundle",
   "jito_bundle",
@@ -73,6 +75,10 @@ const MAGICBLOCK_VALIDATOR_OPTIONS: MagicBlockValidator[] = [
   "devnet_us",
   "devnet_tee"
 ];
+
+function freshNonce() {
+  return Math.floor(Date.now() / 1000);
+}
 
 type ComposerState = {
   kind: IntentKind;
@@ -95,9 +101,10 @@ type ComposerState = {
   commitFrequencyMs: number;
 };
 
-const initialComposer: ComposerState = {
+function createInitialComposer(): ComposerState {
+  return {
   kind: "mock_execution",
-  nonce: 1,
+  nonce: freshNonce(),
   expiresAt: "",
   mockMessage: "hello shadow",
   transferTo: "",
@@ -115,16 +122,17 @@ const initialComposer: ComposerState = {
   magicBlockValidator: "devnet_tee",
   commitFrequencyMs: 30000
 };
+}
 
 export function ShadowConsole() {
   const [cluster, setCluster] = useState<Cluster>("devnet");
   const [walletAddress, setWalletAddress] = useState("");
   const [owner, setOwner] = useState("");
-  const [ephemeralAuthority, setEphemeralAuthority] = useState("");
+  const [ephemeralAuthority, setEphemeralAuthority] = useState(DEVNET_EPHEMERAL_AUTHORITY);
   const [executorKeypair, setExecutorKeypair] = useState("~/.config/solana/ephemeral.json");
   const [payloadDir, setPayloadDir] = useState("payloads");
   const [relayerUrl, setRelayerUrl] = useState(DEFAULT_RELAYER_URL);
-  const [composer, setComposer] = useState<ComposerState>(initialComposer);
+  const [composer, setComposer] = useState<ComposerState>(() => createInitialComposer());
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [payloadText, setPayloadText] = useState("");
   const [payloadHash, setPayloadHash] = useState("");
@@ -167,6 +175,14 @@ export function ShadowConsole() {
   useEffect(() => {
     window.localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
   }, [queue]);
+
+  useEffect(() => {
+    setPayloadText("");
+    setPayloadHash("");
+    setIntentAccount(null);
+    setPersistedIntent(null);
+    setRelayerResult(null);
+  }, [composer]);
 
   useEffect(() => {
     if (!walletPickerOpen) return;
@@ -256,7 +272,7 @@ export function ShadowConsole() {
       const address = publicKey.toBase58();
       setWalletAddress(address);
       setOwner(address);
-      setEphemeralAuthority((current) => current || address);
+      setEphemeralAuthority((current) => current || DEVNET_EPHEMERAL_AUTHORITY);
       setSelectedWalletId(providerId);
       setWalletPickerOpen(false);
       setWalletState("connected");
@@ -308,25 +324,35 @@ export function ShadowConsole() {
   }
 
   async function submitIntentOnchain() {
-    if (!walletAddress || !owner || !payloadHash) return;
-    if (walletAddress !== ephemeralAuthority) {
-      setTxState("error");
-      setTxMessage("Connected wallet must match the ephemeral authority to submit this intent.");
-      return;
-    }
+    if (!walletAddress || !owner) return;
 
     setTxState("sending");
     setTxMessage("Submitting intent...");
     try {
-      const signature = await sendWalletTransaction(
-        createSubmitIntentTransaction({
-          owner,
-          ephemeralAuthority,
-          nonce: composer.nonce,
-          payloadHash
-        }),
-        walletAddress
-      );
+      const payload = buildPayload(composer);
+      const currentPayloadHash = await hashIntentPayload(payload);
+      setPayloadText(formatPayload(payload));
+      setPayloadHash(currentPayloadHash);
+
+      const signature =
+        walletAddress === ephemeralAuthority
+          ? await sendWalletTransaction(
+              createSubmitIntentTransaction({
+                owner,
+                ephemeralAuthority,
+                nonce: composer.nonce,
+                payloadHash: currentPayloadHash
+              }),
+              walletAddress
+            )
+          : (
+              await submitIntentWithRelayer({
+                relayerUrl,
+                owner,
+                nonce: composer.nonce,
+                payloadHash: currentPayloadHash
+              })
+            ).signature;
       setTxState("success");
       setTxMessage(`Intent transaction sent: ${signature}`);
       await refreshIntent();
@@ -349,7 +375,7 @@ export function ShadowConsole() {
 
     try {
       const payload = buildPayload(composer);
-      const hash = payloadHash || (await hashIntentPayload(payload));
+      const hash = await hashIntentPayload(payload);
       setPayloadText(formatPayload(payload));
       setPayloadHash(hash);
 
@@ -585,9 +611,14 @@ export function ShadowConsole() {
             value={STEALTH_VAULT_PROGRAM_ID.toBase58()}
           />
           <ReadinessItem
-            status="waiting"
+            status="ready"
             label="Deploy wallet"
-            value={`${shortAddress(DEVNET_DEPLOY_WALLET)} needs devnet SOL before deploy`}
+            value={`${shortAddress(DEVNET_DEPLOY_WALLET)} deployed the program`}
+          />
+          <ReadinessItem
+            status="ready"
+            label="Relayer executor"
+            value={shortAddress(DEVNET_EPHEMERAL_AUTHORITY)}
           />
           <ReadinessItem
             status={walletAddress ? "ready" : "waiting"}

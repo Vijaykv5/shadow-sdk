@@ -13,7 +13,7 @@ export const STEALTH_VAULT_PROGRAM_ID = new PublicKey(
 
 export type IntentKind = "mock_execution" | "system_transfer" | "perps_order";
 export type IntentStatus = "draft" | "pending" | "executed" | "cancelled" | "failed";
-export type Cluster = "localnet" | "devnet";
+export type Cluster = "devnet";
 
 export type MockPayload = {
   message: string;
@@ -108,6 +108,16 @@ export type RelayerExecuteResponse = {
   vault: string;
   owner: string;
   executor: string;
+  nonce: number;
+  signature: string;
+  payload_hash: string;
+};
+
+export type RelayerSubmitIntentResponse = {
+  intent: string;
+  vault: string;
+  owner: string;
+  ephemeral_authority: string;
   nonce: number;
   signature: string;
   payload_hash: string;
@@ -279,6 +289,21 @@ export function formatPayload(value: IntentPayload): string {
 }
 
 export function canonicalPayload(value: IntentPayload): string {
+  return stableStringify(value);
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+      .join(",")}}`;
+  }
+
   return JSON.stringify(value);
 }
 
@@ -295,6 +320,24 @@ export async function executeIntentWithRelayer({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ owner, payload })
+  });
+}
+
+export async function submitIntentWithRelayer({
+  relayerUrl,
+  owner,
+  nonce,
+  payloadHash
+}: {
+  relayerUrl: string;
+  owner: string;
+  nonce: number;
+  payloadHash: string;
+}): Promise<RelayerSubmitIntentResponse> {
+  return relayerRequest<RelayerSubmitIntentResponse>(relayerUrl, "/submit-intent", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner, nonce, payload_hash: payloadHash })
   });
 }
 
@@ -341,7 +384,7 @@ export async function executeQueuedIntentWithRelayer({
 }
 
 export function clusterRpcUrl(cluster: Cluster): string {
-  return cluster === "devnet" ? "https://api.devnet.solana.com" : "http://127.0.0.1:8899";
+  return "https://api.devnet.solana.com";
 }
 
 export function shortAddress(address: string): string {
