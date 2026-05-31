@@ -533,6 +533,14 @@ async fn submit_intent_http(
 
     let response = tokio::task::spawn_blocking(move || {
         let payload_hash = payload_hash_from_hex(&request.payload_hash)?;
+        let (vault, _) = derive_vault_pda(&request.owner);
+        let (intent, _) = derive_intent_pda(&vault, request.nonce);
+        anyhow::ensure!(
+            rpc_client.get_account(&intent).is_err(),
+            "intent already exists for nonce {}; choose a fresh nonce before submitting again",
+            request.nonce
+        );
+
         let result = submit_execution_intent(
             &rpc_client,
             request.owner,
@@ -1720,7 +1728,7 @@ payload = "{}"
 
         assert_eq!(first.id, "intent-100-1");
         assert_eq!(second.id, "intent-101-2");
-        assert_eq!(response.owner, owner);
+        assert_eq!(response.owner, owner.to_string());
         assert_eq!(response.nonce, 7);
         assert_eq!(response.status, QueuedIntentStatus::Queued);
         assert_eq!(response.created_at, 100);
@@ -1736,7 +1744,7 @@ payload = "{}"
             nonce: 8,
             kind: "system_transfer".to_string(),
             payload: serde_json::json!({
-                "to": recipient,
+                "to": recipient.to_string(),
                 "lamports": 10,
             }),
             route: None,
@@ -1778,7 +1786,7 @@ payload = "{}"
             nonce: 8,
             kind: "system_transfer".to_string(),
             payload: serde_json::json!({
-                "to": Pubkey::new_unique(),
+                "to": Pubkey::new_unique().to_string(),
                 "lamports": 0,
             }),
             route: None,

@@ -12,12 +12,12 @@ import {
   Loader2,
   RadioTower,
   RefreshCw,
-  Shield,
   Terminal,
-  Wallet,
-  XCircle
+  Wallet
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useWallet } from "@solana/wallet-adapter-react";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import {
   Connection,
   Transaction
@@ -53,13 +53,9 @@ import {
   type RelayerQueuedIntent,
   type VaultAccount
 } from "@/lib/shadow";
-import {
-  getAvailableWallets,
-  getWalletById,
-  type WalletProviderOption
-} from "@/lib/wallet";
 
 const QUEUE_KEY = "shadow-sdk.intent-queue";
+const MIN_NEW_ACCOUNT_TRANSFER_LAMPORTS = 1_000_000;
 const DEVNET_DEPLOY_WALLET = "2eDJJZydDTV4HQmbtX6YwhrdfCW7XU3zms9538HGqkuB";
 const DEVNET_EPHEMERAL_AUTHORITY = "2ED9SNAYgWN5WU7sKkhZqp1baytvcKQqoNsTwSPZpuVk";
 const ROUTE_OPTIONS: Array<Exclude<ExecutionRoute["kind"], "public_rpc">> = [
@@ -101,30 +97,40 @@ type ComposerState = {
   commitFrequencyMs: number;
 };
 
+type Toast = {
+  id: string;
+  tone: "success" | "error" | "info";
+  title: string;
+  message?: string;
+};
+
 function createInitialComposer(): ComposerState {
   return {
-  kind: "mock_execution",
-  nonce: freshNonce(),
-  expiresAt: "",
-  mockMessage: "hello shadow",
-  transferTo: "",
-  transferLamports: 1000000,
-  perpsVenue: "mock",
-  perpsMarket: "SOL-PERP",
-  perpsSide: "long",
-  perpsSizeLots: 10,
-  perpsLimitPrice: 150000000,
-  perpsSlippageBps: 50,
-  perpsReduceOnly: false,
-  perpsClientOrderId: "shadow-demo-1",
-  routeKind: "mock_private_bundle",
-  tipLamports: 5000,
-  magicBlockValidator: "devnet_tee",
-  commitFrequencyMs: 30000
-};
+    kind: "mock_execution",
+    nonce: freshNonce(),
+    expiresAt: "",
+    mockMessage: "hello shadow",
+    transferTo: "",
+    transferLamports: 1000000,
+    perpsVenue: "mock",
+    perpsMarket: "SOL-PERP",
+    perpsSide: "long",
+    perpsSizeLots: 10,
+    perpsLimitPrice: 150000000,
+    perpsSlippageBps: 50,
+    perpsReduceOnly: false,
+    perpsClientOrderId: "shadow-demo-1",
+    routeKind: "mock_private_bundle",
+    tipLamports: 5000,
+    magicBlockValidator: "devnet_tee",
+    commitFrequencyMs: 30000
+  };
 }
 
 export function ShadowConsole() {
+  const nextStepsRef = useRef<HTMLDivElement | null>(null);
+  const wallet = useWallet();
+  const { setVisible: setWalletModalVisible } = useWalletModal();
   const [cluster, setCluster] = useState<Cluster>("devnet");
   const [walletAddress, setWalletAddress] = useState("");
   const [owner, setOwner] = useState("");
@@ -137,13 +143,6 @@ export function ShadowConsole() {
   const [payloadText, setPayloadText] = useState("");
   const [payloadHash, setPayloadHash] = useState("");
   const [copied, setCopied] = useState<string | null>(null);
-  const [walletState, setWalletState] = useState<"idle" | "connecting" | "connected" | "error">(
-    "idle"
-  );
-  const [selectedWalletId, setSelectedWalletId] = useState("");
-  const [walletPickerOpen, setWalletPickerOpen] = useState(false);
-  const [walletProviders, setWalletProviders] = useState<WalletProviderOption[]>([]);
-  const [walletError, setWalletError] = useState("");
   const [txState, setTxState] = useState<"idle" | "sending" | "success" | "error">("idle");
   const [txMessage, setTxMessage] = useState("");
   const [vaultAccount, setVaultAccount] = useState<VaultAccount | null>(null);
@@ -160,6 +159,7 @@ export function ShadowConsole() {
     payloadHash: string;
   } | null>(null);
   const [persistedIntent, setPersistedIntent] = useState<RelayerQueuedIntent | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
 
   const rpcUrl = clusterRpcUrl(cluster);
   const connection = useMemo(() => new Connection(rpcUrl, "confirmed"), [rpcUrl]);
@@ -169,7 +169,6 @@ export function ShadowConsole() {
     if (saved) {
       setQueue(JSON.parse(saved) as QueueItem[]);
     }
-    setWalletProviders(getAvailableWallets());
   }, []);
 
   useEffect(() => {
@@ -185,17 +184,23 @@ export function ShadowConsole() {
   }, [composer]);
 
   useEffect(() => {
-    if (!walletPickerOpen) return;
+    if (!vaultAccount) return;
+    nextStepsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [vaultAccount]);
 
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setWalletPickerOpen(false);
-      }
-    }
+  useEffect(() => {
+    const address = wallet.publicKey?.toBase58() ?? "";
+    setWalletAddress(address);
+    if (!address) return;
 
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [walletPickerOpen]);
+    setOwner(address);
+    setEphemeralAuthority((current) => current || DEVNET_EPHEMERAL_AUTHORITY);
+    setComposer((current) => ({
+      ...current,
+      transferTo: current.transferTo || address
+    }));
+    showToast("success", "Wallet connected", shortAddress(address));
+  }, [wallet.publicKey]);
 
   const ownerValid = validatePubkey(owner);
   const vaultPda = useMemo(() => (ownerValid ? deriveVaultPda(owner) : ""), [owner, ownerValid]);
@@ -247,54 +252,12 @@ export function ShadowConsole() {
   }, []);
 
   function openWalletPicker() {
-    setWalletProviders(getAvailableWallets());
-    setWalletError("");
-    setWalletPickerOpen(true);
-  }
-
-  async function connectWallet(providerId: string) {
-    setWalletState("connecting");
-    setWalletError("");
-    const wallet = getWalletById(providerId);
-    if (!wallet) {
-      setWalletState("error");
-      setWalletError("That wallet provider was not found. Refresh the page and try again.");
-      return;
-    }
-
-    try {
-      const result = await wallet.connect();
-      const publicKey = result?.publicKey ?? wallet.publicKey;
-      if (!publicKey) {
-        throw new Error("Wallet connected, but did not expose a public key.");
-      }
-
-      const address = publicKey.toBase58();
-      setWalletAddress(address);
-      setOwner(address);
-      setEphemeralAuthority((current) => current || DEVNET_EPHEMERAL_AUTHORITY);
-      setSelectedWalletId(providerId);
-      setWalletPickerOpen(false);
-      setWalletState("connected");
-    } catch (error) {
-      setWalletState("error");
-      setWalletError(error instanceof Error ? error.message : "Wallet connection was rejected.");
-    }
+    setWalletModalVisible(true);
   }
 
   async function sendWalletTransaction(transaction: Transaction, signerAddress: string) {
-    const wallet = selectedWalletId ? getWalletById(selectedWalletId) : null;
-    if (!wallet) throw new Error("Browser wallet is not connected");
+    if (!wallet.signTransaction) throw new Error("Connected wallet does not support transaction signing");
     const prepared = await prepareTransaction(connection, transaction, signerAddress);
-
-    if (wallet.signAndSendTransaction) {
-      return (await wallet.signAndSendTransaction(prepared)).signature;
-    }
-
-    if (!wallet.signTransaction) {
-      throw new Error("Wallet does not support transaction signing");
-    }
-
     const signed = await wallet.signTransaction(prepared);
     return connection.sendRawTransaction(signed.serialize());
   }
@@ -304,6 +267,7 @@ export function ShadowConsole() {
     if (walletAddress !== owner) {
       setTxState("error");
       setTxMessage("Connected wallet must match the owner wallet to create this vault.");
+      showToast("error", "Wrong wallet", "Connect the owner wallet before creating the vault.");
       return;
     }
 
@@ -315,11 +279,14 @@ export function ShadowConsole() {
         walletAddress
       );
       setTxState("success");
-      setTxMessage(`Vault transaction sent: ${signature}`);
+      setTxMessage(`Vault created: ${signature}`);
+      showToast("success", "Vault created", shortAddress(signature));
       await refreshVault();
     } catch (error) {
       setTxState("error");
-      setTxMessage(error instanceof Error ? error.message : "Failed to create vault");
+      const message = error instanceof Error ? error.message : "Failed to create vault";
+      setTxMessage(message);
+      showToast("error", "Vault creation failed", message);
     }
   }
 
@@ -329,6 +296,9 @@ export function ShadowConsole() {
     setTxState("sending");
     setTxMessage("Submitting intent...");
     try {
+      const validationError = getComposerValidationError(composer);
+      if (validationError) throw new Error(validationError);
+
       const payload = buildPayload(composer);
       const currentPayloadHash = await hashIntentPayload(payload);
       setPayloadText(formatPayload(payload));
@@ -354,26 +324,41 @@ export function ShadowConsole() {
               })
             ).signature;
       setTxState("success");
-      setTxMessage(`Intent transaction sent: ${signature}`);
+      setTxMessage(`Intent submitted: ${signature}`);
+      showToast("success", "Intent submitted", "The hash is now on devnet.");
       await refreshIntent();
     } catch (error) {
       setTxState("error");
-      setTxMessage(error instanceof Error ? error.message : "Failed to submit intent");
+      const message = formatSubmitError(error);
+      setTxMessage(message);
+      showToast("error", "Intent submission failed", message);
     }
+  }
+
+  function assignFreshNonce() {
+    setComposer((value) => ({ ...value, nonce: freshNonce() }));
+    setTxMessage("");
+    setTxState("idle");
+    setRelayerMessage("");
+    setRelayerState("idle");
   }
 
   async function executeViaRelayer() {
     if (!ownerValid) {
       setRelayerState("error");
       setRelayerMessage("Set a valid owner wallet before calling the relayer.");
+      showToast("error", "Owner wallet needed", "Set a valid owner wallet first.");
       return;
     }
 
     setRelayerState("sending");
-    setRelayerMessage("Sending private payload to relayer...");
+    setRelayerMessage("Preparing execution...");
     setRelayerResult(null);
 
     try {
+      const validationError = getComposerValidationError(composer);
+      if (validationError) throw new Error(validationError);
+
       const payload = buildPayload(composer);
       const hash = await hashIntentPayload(payload);
       setPayloadText(formatPayload(payload));
@@ -391,11 +376,14 @@ export function ShadowConsole() {
         payloadHash: result.payload_hash
       });
       setRelayerState("success");
-      setRelayerMessage(`Relayer executed intent: ${result.signature}`);
+      setRelayerMessage(`Intent executed: ${result.signature}`);
+      showToast("success", "Intent executed", shortAddress(result.signature));
       await refreshIntent();
     } catch (error) {
       setRelayerState("error");
-      setRelayerMessage(error instanceof Error ? error.message : "Relayer execution failed");
+      const message = error instanceof Error ? error.message : "Execution failed";
+      setRelayerMessage(message);
+      showToast("error", "Execution failed", message);
     }
   }
 
@@ -403,13 +391,17 @@ export function ShadowConsole() {
     if (!ownerValid) {
       setRelayerState("error");
       setRelayerMessage("Set a valid owner wallet before queueing the payload.");
+      showToast("error", "Owner wallet needed", "Set a valid owner wallet first.");
       return;
     }
 
     setRelayerState("sending");
-    setRelayerMessage("Queueing private payload in relayer storage...");
+    setRelayerMessage("Queueing intent...");
 
     try {
+      const validationError = getComposerValidationError(composer);
+      if (validationError) throw new Error(validationError);
+
       const payload = buildPayload(composer);
       const hash = await hashIntentPayload(payload);
       setPayloadText(formatPayload(payload));
@@ -422,10 +414,13 @@ export function ShadowConsole() {
       });
       setPersistedIntent(queued);
       setRelayerState("success");
-      setRelayerMessage(`Queued in relayer storage: ${queued.id}`);
+      setRelayerMessage(`Intent queued: ${queued.id}`);
+      showToast("success", "Intent queued", "Ready for relayer execution.");
     } catch (error) {
       setRelayerState("error");
-      setRelayerMessage(error instanceof Error ? error.message : "Failed to queue payload");
+      const message = error instanceof Error ? error.message : "Failed to queue intent";
+      setRelayerMessage(message);
+      showToast("error", "Queue failed", message);
     }
   }
 
@@ -433,7 +428,7 @@ export function ShadowConsole() {
     if (!persistedIntent) return;
 
     setRelayerState("sending");
-    setRelayerMessage("Checking persisted intent status...");
+    setRelayerMessage("Checking intent status...");
 
     try {
       const queued = await getRelayerIntent({
@@ -442,10 +437,13 @@ export function ShadowConsole() {
       });
       setPersistedIntent(queued);
       setRelayerState("success");
-      setRelayerMessage(`Relayer status: ${queued.status}`);
+      setRelayerMessage(`Intent status: ${queued.status}`);
+      showToast("info", "Status updated", queued.status);
     } catch (error) {
       setRelayerState("error");
-      setRelayerMessage(error instanceof Error ? error.message : "Failed to fetch queued intent");
+      const message = error instanceof Error ? error.message : "Failed to fetch intent status";
+      setRelayerMessage(message);
+      showToast("error", "Status check failed", message);
     }
   }
 
@@ -453,7 +451,7 @@ export function ShadowConsole() {
     if (!persistedIntent) return;
 
     setRelayerState("sending");
-    setRelayerMessage("Executing queued private payload...");
+    setRelayerMessage("Executing queued intent...");
 
     try {
       const queued = await executeQueuedIntentWithRelayer({
@@ -464,13 +462,22 @@ export function ShadowConsole() {
       setRelayerState(queued.status === "failed" ? "error" : "success");
       setRelayerMessage(
         queued.status === "failed"
-          ? queued.error ?? "Queued execution failed"
-          : `Relayer status: ${queued.status}`
+          ? queued.error ?? "Execution failed"
+          : queued.status === "executed"
+            ? "Intent executed"
+            : `Intent status: ${queued.status}`
+      );
+      showToast(
+        queued.status === "failed" ? "error" : "success",
+        queued.status === "failed" ? "Execution failed" : "Intent executed",
+        queued.status === "failed" ? queued.error ?? undefined : undefined
       );
       await refreshIntent();
     } catch (error) {
       setRelayerState("error");
-      setRelayerMessage(error instanceof Error ? error.message : "Failed to execute queued intent");
+      const message = error instanceof Error ? error.message : "Failed to execute queued intent";
+      setRelayerMessage(message);
+      showToast("error", "Execution failed", message);
     }
   }
 
@@ -495,14 +502,24 @@ export function ShadowConsole() {
     if (!response.ok) {
       setTxState("error");
       setTxMessage(result.error ?? "Failed to save payload");
+      showToast("error", "Save failed", result.error ?? "Failed to save payload");
       return;
     }
     setSavedPayloadPath(result.path ?? "");
     setTxState("success");
     setTxMessage(`Payload saved to ${result.path}`);
+    showToast("success", "Payload saved", result.path);
   }
 
   async function generatePayload() {
+    const validationError = getComposerValidationError(composer);
+    if (validationError) {
+      setTxState("error");
+      setTxMessage(validationError);
+      showToast("error", "Check the intent", validationError);
+      return;
+    }
+
     const payload = buildPayload(composer);
     const text = formatPayload(payload);
     setPayloadText(text);
@@ -510,6 +527,14 @@ export function ShadowConsole() {
   }
 
   async function addToQueue() {
+    const validationError = getComposerValidationError(composer);
+    if (validationError) {
+      setTxState("error");
+      setTxMessage(validationError);
+      showToast("error", "Check the intent", validationError);
+      return;
+    }
+
     const payload = payloadText || formatPayload(buildPayload(composer));
     const hash = payloadHash || (await hashPayloadBytes(payload));
     const item: QueueItem = {
@@ -536,477 +561,458 @@ export function ShadowConsole() {
     await navigator.clipboard.writeText(text);
     setCopied(label);
     window.setTimeout(() => setCopied(null), 1200);
+    showToast("info", "Copied", "Ready to paste.");
+  }
+
+  function showToast(tone: Toast["tone"], title: string, message?: string) {
+    const id = crypto.randomUUID();
+    setToasts((items) => [...items.slice(-3), { id, tone, title, message }]);
+    window.setTimeout(() => {
+      setToasts((items) => items.filter((item) => item.id !== id));
+    }, 4200);
+  }
+
+  if (!walletAddress) {
+    return (
+      <main className="min-h-screen bg-[#0f1110] text-stone-50">
+        <ToastRegion toasts={toasts} />
+        <section className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-5 py-5 sm:px-8 lg:px-10">
+          <header className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-16 items-center justify-center overflow-hidden rounded-md border border-lime-300/30 bg-black">
+                <img className="h-8 w-auto" src="/logo/logo.png" alt="Shadow SDK" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-lime-200">Shadow SDK</p>
+                <p className="text-xs text-stone-400">Devnet private intents</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="hidden rounded-md border border-stone-800 bg-stone-900/70 px-3 py-2 text-sm text-stone-300 sm:inline-flex">
+                Devnet
+              </span>
+              <button
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-stone-700 bg-stone-900 px-4 py-3 text-sm font-semibold text-stone-100 transition hover:border-lime-300/50 focus-visible:ring-2 focus-visible:ring-lime-200 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-950"
+                type="button"
+                onClick={openWalletPicker}
+              >
+                <Wallet aria-hidden="true" />
+                Connect wallet
+              </button>
+            </div>
+          </header>
+
+          <div className="grid flex-1 items-center gap-10 py-16 lg:grid-cols-[1.05fr_0.95fr]">
+            <div className="max-w-3xl">
+              <p className="mb-4 inline-flex rounded-md border border-lime-300/30 bg-lime-300/10 px-3 py-1 text-sm font-medium text-lime-200">
+                Private Solana intent execution
+              </p>
+              <h1 className="text-5xl font-semibold leading-tight tracking-normal text-stone-50 sm:text-6xl lg:text-7xl">
+                Commit privately. Execute when the route is ready.
+              </h1>
+              <p className="mt-6 max-w-2xl text-lg leading-8 text-stone-300">
+                Shadow keeps intent details private while devnet records the commitment hash and execution status.
+              </p>
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+                <button
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-lime-300 px-5 py-3 font-semibold text-stone-950 transition hover:bg-lime-200 focus-visible:ring-2 focus-visible:ring-lime-200 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-950"
+                  type="button"
+                  onClick={openWalletPicker}
+                >
+                  <Wallet aria-hidden="true" />
+                  Get started
+                </button>
+                <a
+                  className="inline-flex min-h-11 items-center justify-center rounded-md border border-stone-700 bg-stone-900/70 px-5 py-3 font-semibold text-stone-100 transition hover:border-stone-500 focus-visible:ring-2 focus-visible:ring-lime-200 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-950"
+                  href="https://github.com/Vijaykv5/shadow-sdk#readme"
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Docs
+                </a>
+              </div>
+            </div>
+
+            <div className="rounded-md border border-stone-800 bg-stone-950/60 p-5 shadow-2xl shadow-black/30">
+              <div className="mb-5 flex items-center justify-between border-b border-stone-800 pb-4">
+                <div>
+                  <p className="text-sm text-stone-400">Current program</p>
+                  <p className="mt-1 font-mono text-sm text-stone-100">{shortAddress(STEALTH_VAULT_PROGRAM_ID.toBase58())}</p>
+                </div>
+                <RadioTower className="text-lime-200" aria-hidden="true" />
+              </div>
+              <div className="grid gap-3">
+                {[
+                  ["Network", "Solana devnet"],
+                  ["Relayer", relayerUrl],
+                  ["Executor", shortAddress(DEVNET_EPHEMERAL_AUTHORITY)]
+                ].map(([label, value]) => (
+                  <div className="flex items-center justify-between rounded-md border border-stone-800 bg-stone-900/70 px-4 py-3" key={label}>
+                    <span className="text-sm text-stone-400">{label}</span>
+                    <span className="font-mono text-sm text-stone-100">{value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    );
   }
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">Shadow SDK Console</p>
-          <h1>Private intent execution</h1>
-        </div>
-        <div className="topbar-actions">
-          <select
-            aria-label="Cluster"
-            className="select"
-            value={cluster}
-            onChange={(event) => setCluster(event.target.value as Cluster)}
-          >
-            <option value="devnet">Devnet</option>
-          </select>
-          <button className="button button-primary" type="button" onClick={openWalletPicker}>
-            {walletState === "connecting" ? <Loader2 className="spin" /> : <Wallet />}
-            {walletAddress ? shortAddress(walletAddress) : "Connect wallet"}
-          </button>
-        </div>
-      </header>
-
-      {walletState === "error" ? (
-        <section className="notice notice-error" role="alert">
-          <AlertCircle />
-          {walletError || "Wallet not found, not selected, or connection was rejected."}
-        </section>
-      ) : null}
-
-      {walletPickerOpen ? (
-        <WalletPicker
-          providers={walletProviders}
-          connecting={walletState === "connecting"}
-          selectedWalletId={selectedWalletId}
-          onRefresh={() => setWalletProviders(getAvailableWallets())}
-          onConnect={connectWallet}
-          onClose={() => setWalletPickerOpen(false)}
-        />
-      ) : null}
-
-      {txMessage ? (
-        <section className={txState === "error" ? "notice notice-error" : "notice"} role="status">
-          {txState === "sending" ? <Loader2 className="spin" /> : txState === "error" ? <AlertCircle /> : <Check />}
-          {txMessage}
-        </section>
-      ) : null}
-
-      <section className="stats-grid" aria-label="Project state">
-        <Stat icon={<Shield />} label="Vault PDA" value={vaultPda ? shortAddress(vaultPda) : "Unset"} />
-        <Stat icon={<KeyRound />} label="Intent PDA" value={intentPda ? shortAddress(intentPda) : "Unset"} />
-        <Stat
-          icon={<Activity />}
-          label="Relayer queue"
-          value={persistedIntent ? persistedIntent.status : `${queue.length} local`}
-        />
-        <Stat icon={<RadioTower />} label="RPC" value={clusterRpcUrl(cluster)} />
-      </section>
-
-      <section className="panel deploy-panel">
-        <PanelHeader icon={<RadioTower />} title="Devnet Deploy Readiness" action="Next" />
-        <div className="readiness-grid">
-          <ReadinessItem
-            status={cluster === "devnet" ? "ready" : "waiting"}
-            label="Web cluster"
-            value={cluster === "devnet" ? "Devnet selected" : "Switch app cluster to Devnet before wallet testing"}
-          />
-          <ReadinessItem
-            status="ready"
-            label="Program id"
-            value={STEALTH_VAULT_PROGRAM_ID.toBase58()}
-          />
-          <ReadinessItem
-            status="ready"
-            label="Deploy wallet"
-            value={`${shortAddress(DEVNET_DEPLOY_WALLET)} deployed the program`}
-          />
-          <ReadinessItem
-            status="ready"
-            label="Relayer executor"
-            value={shortAddress(DEVNET_EPHEMERAL_AUTHORITY)}
-          />
-          <ReadinessItem
-            status={walletAddress ? "ready" : "waiting"}
-            label="Test wallet"
-            value={walletAddress ? shortAddress(walletAddress) : "Connect wallet after deployment"}
-          />
-        </div>
-        <CommandBlock
-          title="Deploy Devnet Program"
-          command={deployCommand}
-          onCopy={(text) => copyText("deploy", text)}
-          copied={copied === "deploy"}
-        />
-      </section>
-
-      <div className="dashboard-grid">
-        <section className="panel">
-          <PanelHeader icon={<Shield />} title="Vault Setup" action="Step 1" />
-          <div className="field-grid">
-            <Field
-              label="Owner wallet"
-              value={owner}
-              onChange={setOwner}
-              placeholder="Owner public key"
-              error={owner && !ownerValid ? "Invalid Solana public key" : ""}
-            />
-            <Field
-              label="Ephemeral authority"
-              value={ephemeralAuthority}
-              onChange={setEphemeralAuthority}
-              placeholder="Temporary executor public key"
-            />
-            <Field
-              label="Executor keypair"
-              value={executorKeypair}
-              onChange={setExecutorKeypair}
-              placeholder="~/.config/solana/ephemeral.json"
-            />
-            <Field
-              label="Relayer payload directory"
-              value={payloadDir}
-              onChange={setPayloadDir}
-              placeholder="payloads"
-            />
-            <Field
-              label="Relayer URL"
-              value={relayerUrl}
-              onChange={setRelayerUrl}
-              placeholder="http://127.0.0.1:8787"
-              type="url"
-            />
-          </div>
-          <CommandBlock
-            title="Create Vault"
-            command={[
-              "cargo run -p shadow-cli -- create-vault \\",
-              `  --ephemeral-authority ${ephemeralAuthority || "<EPHEMERAL_AUTHORITY>"}`
-            ].join("\n")}
-            onCopy={(text) => copyText("create-vault", text)}
-            copied={copied === "create-vault"}
-          />
-          <div className="button-row">
-            <button
-              className="button button-primary"
-              type="button"
-              disabled={!walletAddress || !ownerValid || !validatePubkey(ephemeralAuthority) || txState === "sending"}
-              onClick={createVaultOnchain}
-            >
-              <Wallet />
-              Create on-chain
-            </button>
-            <button className="button" type="button" disabled={!vaultPda} onClick={refreshVault}>
-              <RefreshCw />
-              Refresh vault
-            </button>
-          </div>
-          <AccountReadout
-            title="Vault account"
-            rows={[
-              ["PDA", vaultPda || "Unset"],
-              ["Owner", vaultAccount?.owner ?? "Not fetched"],
-              ["Ephemeral", vaultAccount?.ephemeralAuthority ?? "Not fetched"]
-            ]}
-          />
-        </section>
-
-        <section className="panel">
-          <PanelHeader icon={<FileJson />} title="Intent Composer" action="Step 2" />
-          <div className="segmented" role="tablist" aria-label="Intent type">
-            {(["mock_execution", "system_transfer", "perps_order"] as const).map((kind) => (
-              <button
-                className={composer.kind === kind ? "segment active" : "segment"}
-                type="button"
-                key={kind}
-                onClick={() => setComposer((value) => ({ ...value, kind }))}
-              >
-                {kind.replace("_", " ")}
-              </button>
-            ))}
-          </div>
-          <ComposerFields composer={composer} setComposer={setComposer} />
-          <div className="button-row">
-            <button className="button" type="button" onClick={generatePayload}>
-              <RefreshCw />
-              Generate hash
-            </button>
-            <button className="button button-primary" type="button" onClick={addToQueue}>
-              <ArrowRight />
-              Add to queue
-            </button>
-            <button className="button" type="button" onClick={savePayloadToPending}>
-              <FileJson />
-              Save pending
-            </button>
-          </div>
-          {savedPayloadPath ? <p className="inline-note">Saved: {savedPayloadPath}</p> : null}
-        </section>
-      </div>
-
-      <div className="dashboard-grid lower">
-        <section className="panel panel-tall">
-          <PanelHeader icon={<Clipboard />} title="Payload and Hash" action="Step 3" />
-          <pre className="payload-preview">{payloadText || formatPayload(buildPayload(composer))}</pre>
-          <div className="hash-row">
-            <span>{payloadHash || "Generate a hash to submit on-chain"}</span>
-            <button
-              aria-label="Copy payload hash"
-              className="icon-button"
-              type="button"
-              disabled={!payloadHash}
-              onClick={() => copyText("hash", payloadHash)}
-            >
-              {copied === "hash" ? <Check /> : <Copy />}
-            </button>
-          </div>
-          <CommandBlock
-            title="Submit Intent"
-            command={submitIntentCommand}
-            onCopy={(text) => copyText("submit", text)}
-            copied={copied === "submit"}
-          />
-          <div className="button-row">
-            <button
-              className="button button-primary"
-              type="button"
-              disabled={!walletAddress || !payloadHash || txState === "sending"}
-              onClick={submitIntentOnchain}
-            >
-              <Wallet />
-              Submit on-chain
-            </button>
-            <button className="button" type="button" disabled={!intentPda} onClick={refreshIntent}>
-              <RefreshCw />
-              Refresh intent
-            </button>
-          </div>
-          <AccountReadout
-            title="Intent account"
-            rows={[
-              ["PDA", intentPda || "Unset"],
-              ["Status", intentAccount?.status ?? "Not fetched"],
-              ["Hash", intentAccount?.payloadHash ?? "Not fetched"],
-              ["Executor", intentAccount?.executor ?? "Not fetched"]
-            ]}
-          />
-        </section>
-
-        <section className="panel panel-tall">
-          <PanelHeader icon={<Terminal />} title="Relayer API" action="Step 4" />
-          <CommandBlock
-            title="Start Relayer API"
-            command={runRelayerCommand}
-            onCopy={(text) => copyText("relayer", text)}
-            copied={copied === "relayer"}
-          />
-          <div className="button-row">
-            <button
-              className="button button-primary"
-              type="button"
-              disabled={!ownerValid || relayerState === "sending"}
-              onClick={queueInRelayer}
-              aria-busy={relayerState === "sending"}
-            >
-              {relayerState === "sending" ? <Loader2 className="spin" /> : <FileJson />}
-              Queue in DB
-            </button>
-            <button
-              className="button"
-              type="button"
-              disabled={!ownerValid || !intentPda || relayerState === "sending"}
-              onClick={executeViaRelayer}
-              aria-busy={relayerState === "sending"}
-            >
-              {relayerState === "sending" ? <Loader2 className="spin" /> : <RadioTower />}
-              Execute once
-            </button>
-            <button
-              className="button"
-              type="button"
-              disabled={
-                !persistedIntent ||
-                persistedIntent.status === "executed" ||
-                persistedIntent.status === "executing" ||
-                relayerState === "sending"
-              }
-              onClick={executePersistedIntent}
-              aria-busy={relayerState === "sending"}
-            >
-              {relayerState === "sending" ? <Loader2 className="spin" /> : <ArrowRight />}
-              Execute queued
-            </button>
-            <button
-              className="button"
-              type="button"
-              disabled={!persistedIntent || relayerState === "sending"}
-              onClick={refreshPersistedIntent}
-            >
-              <RefreshCw />
-              Check DB
-            </button>
-            <button
-              className="button"
-              type="button"
-              disabled={relayerState === "sending"}
-              onClick={() => {
-                setRelayerMessage("");
-                setRelayerState("idle");
-                setRelayerResult(null);
-                setPersistedIntent(null);
-              }}
-            >
-              <RefreshCw />
-              Reset
-            </button>
-          </div>
-          {relayerMessage ? (
-            <section
-              className={relayerState === "error" ? "notice notice-error compact-notice" : "notice compact-notice"}
-              role={relayerState === "error" ? "alert" : "status"}
-            >
-              {relayerState === "sending" ? (
-                <Loader2 className="spin" />
-              ) : relayerState === "error" ? (
-                <AlertCircle />
-              ) : (
-                <Check />
-              )}
-              {relayerMessage}
-            </section>
-          ) : null}
-          {relayerResult ? (
-            <AccountReadout
-              title="Relayer result"
-              rows={[
-                ["Signature", relayerResult.signature],
-                ["Intent", relayerResult.intent],
-                ["Vault", relayerResult.vault],
-                ["Hash", relayerResult.payloadHash]
-              ]}
-            />
-          ) : null}
-          {persistedIntent ? (
-            <RelayerQueueCard
-              item={persistedIntent}
-              onCopy={(label, text) => copyText(label, text)}
-              copied={copied}
-            />
-          ) : (
-            <div className="empty-state compact-empty">
-              <FileJson />
-              <p>No persisted relayer intent yet.</p>
-            </div>
-          )}
-          <div className="queue-list">
-            {queue.length === 0 ? (
-              <div className="empty-state">
-                <FileJson />
-                <p>No local queue items yet.</p>
+    <main className="min-h-screen bg-[#0f1110] px-5 py-5 text-stone-50 sm:px-8 lg:px-10">
+      <ToastRegion toasts={toasts} />
+      <div className="mx-auto max-w-6xl">
+        <header className="mb-8 flex flex-col gap-4 border-b border-stone-800 pb-6 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="mb-3 flex items-center gap-3">
+              <div className="flex h-10 w-16 items-center justify-center overflow-hidden rounded-md border border-lime-300/30 bg-black">
+                <img className="h-8 w-auto" src="/logo/logo.png" alt="Shadow SDK" />
               </div>
-            ) : (
-              queue.map((item) => (
-                <article className="queue-item" key={item.id}>
-                  <div>
-                    <div className="queue-title">
-                      <StatusDot status={item.status} />
-                      <strong>{item.kind}</strong>
-                      <span>nonce {item.nonce}</span>
-                    </div>
-                    <p>{shortAddress(item.hash)}</p>
-                  </div>
-                  <div className="queue-actions">
-                    <button type="button" className="icon-button" onClick={() => copyText(item.id, item.payload)}>
-                      {copied === item.id ? <Check /> : <Copy />}
-                    </button>
-                    <button type="button" className="icon-button" onClick={() => updateQueue(item.id, "executed")}>
-                      <Check />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      onClick={() => updateQueue(item.id, "failed", "Marked failed in console")}
-                    >
-                      <XCircle />
-                    </button>
-                  </div>
-                </article>
-              ))
-            )}
+              <p className="text-sm font-semibold text-lime-200">Shadow SDK Console</p>
+            </div>
+            <h1 className="mt-2 text-3xl font-semibold tracking-normal text-stone-50 sm:text-4xl">Vault setup</h1>
           </div>
-        </section>
-      </div>
+          <button
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-stone-700 bg-stone-900 px-4 py-3 font-semibold text-stone-100 focus-visible:ring-2 focus-visible:ring-lime-200 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-950"
+            type="button"
+            onClick={openWalletPicker}
+          >
+            <Wallet aria-hidden="true" />
+            {shortAddress(walletAddress)}
+          </button>
+        </header>
 
-      <section className="panel">
-        <PanelHeader icon={<Terminal />} title="Relayer Config" action="Optional" />
-        <pre className="config-preview">{configText}</pre>
-      </section>
+        {txMessage ? (
+          <section
+            className={`mb-5 flex items-center gap-2 rounded-md border px-4 py-3 text-sm ${
+              txState === "error"
+                ? "border-red-400/30 bg-red-400/10 text-red-100"
+                : "border-stone-800 bg-stone-900 text-stone-100"
+            }`}
+            role={txState === "error" ? "alert" : "status"}
+          >
+            {txState === "sending" ? <Loader2 className="spin" aria-hidden="true" /> : txState === "error" ? <AlertCircle aria-hidden="true" /> : <Check aria-hidden="true" />}
+            {txMessage}
+          </section>
+        ) : null}
+
+        <section className="grid gap-6 lg:grid-cols-[0.8fr_1.2fr]">
+          <aside className="rounded-md border border-stone-800 bg-stone-950/60 p-5">
+            <p className="text-sm font-semibold text-lime-200">Step 1</p>
+            <h2 className="mt-2 text-2xl font-semibold">Create or refresh your vault</h2>
+            <p className="mt-3 text-sm leading-6 text-stone-400">
+              The vault binds your wallet to the relayer executor that will submit private intent hashes on devnet.
+            </p>
+          </aside>
+
+          <section className="rounded-md border border-stone-800 bg-stone-950/60 p-5">
+            <div className="grid gap-4 md:grid-cols-2">
+              <LabeledValue label="Owner wallet" value={owner} onChange={setOwner} error={owner && !ownerValid ? "Invalid Solana public key" : ""} />
+              <LabeledValue label="Ephemeral authority" value={ephemeralAuthority} onChange={setEphemeralAuthority} />
+              <LabeledValue label="Relayer URL" value={relayerUrl} onChange={setRelayerUrl} type="url" />
+              <LabeledValue label="Executor keypair" value={executorKeypair} onChange={setExecutorKeypair} />
+            </div>
+
+            <div className="mt-5 flex flex-wrap gap-3">
+              <button
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-lime-300 px-5 py-3 font-semibold text-stone-950 transition hover:bg-lime-200 focus-visible:ring-2 focus-visible:ring-lime-200 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-950 disabled:opacity-50"
+                type="button"
+                disabled={!ownerValid || !validatePubkey(ephemeralAuthority) || txState === "sending"}
+                onClick={createVaultOnchain}
+              >
+                {txState === "sending" ? <Loader2 className="spin" aria-hidden="true" /> : <Wallet aria-hidden="true" />}
+                Create on-chain
+              </button>
+              <button
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-stone-700 bg-stone-900 px-5 py-3 font-semibold text-stone-100 transition hover:border-stone-500 focus-visible:ring-2 focus-visible:ring-lime-200 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-950"
+                type="button"
+                onClick={refreshVault}
+              >
+                <RefreshCw aria-hidden="true" />
+                Refresh vault
+              </button>
+            </div>
+
+            <div className="mt-6 rounded-md border border-stone-800 bg-stone-900/70 p-4">
+              <h3 className="font-semibold">Vault account</h3>
+              <dl className="mt-4 grid gap-3 text-sm">
+                {[
+                  ["PDA", vaultPda || "Unset"],
+                  ["Owner", vaultAccount?.owner ?? "Not fetched"],
+                  ["Ephemeral", vaultAccount?.ephemeralAuthority ?? "Not fetched"]
+                ].map(([label, value]) => (
+                  <div className="grid gap-1 sm:grid-cols-[140px_1fr]" key={label}>
+                    <dt className="text-stone-500">{label}</dt>
+                    <dd className="break-all font-mono text-stone-100">{value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          </section>
+        </section>
+
+        {vaultAccount ? (
+          <div ref={nextStepsRef} className="mt-8 grid gap-6 scroll-mt-6">
+            <section className="grid gap-6 lg:grid-cols-[0.8fr_1.2fr]">
+              <aside className="rounded-md border border-stone-800 bg-stone-950/60 p-5">
+                <p className="text-sm font-semibold text-lime-200">Step 2</p>
+                <h2 className="mt-2 text-2xl font-semibold">Compose an intent</h2>
+                <p className="mt-3 text-sm leading-6 text-stone-400">
+                  Choose the intent shape, generate its hash, then submit that hash to devnet.
+                </p>
+              </aside>
+
+              <section className="rounded-md border border-stone-800 bg-stone-950/60 p-5">
+                <div className="grid grid-cols-1 overflow-hidden rounded-md border border-stone-800 sm:grid-cols-3">
+                  {(["mock_execution", "system_transfer", "perps_order"] as const).map((kind) => (
+                    <button
+                      className={`min-h-11 px-4 py-3 text-sm font-semibold transition focus-visible:ring-2 focus-visible:ring-lime-200 ${
+                        composer.kind === kind
+                          ? "bg-lime-300 text-stone-950"
+                          : "bg-stone-900 text-stone-300 hover:bg-stone-800"
+                      }`}
+                      type="button"
+                      key={kind}
+                      onClick={() =>
+                        setComposer((value) => ({
+                          ...value,
+                          kind,
+                          transferTo:
+                            kind === "system_transfer" ? value.transferTo || owner || walletAddress : value.transferTo
+                        }))
+                      }
+                    >
+                      {kind.replace("_", " ")}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-5">
+                  <ComposerFields composer={composer} setComposer={setComposer} />
+                </div>
+                <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-stone-800 bg-stone-900/60 px-4 py-3">
+                  <p className="text-sm text-stone-400">
+                    Reusing a nonce creates the same intent PDA and will fail.
+                  </p>
+                  <button
+                    className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-stone-700 bg-stone-950 px-4 py-2 text-sm font-semibold text-stone-100 transition hover:border-stone-500 focus-visible:ring-2 focus-visible:ring-lime-200"
+                    type="button"
+                    onClick={assignFreshNonce}
+                  >
+                    <RefreshCw aria-hidden="true" />
+                    New nonce
+                  </button>
+                </div>
+                <div className="mt-5 flex flex-wrap gap-3">
+                  <button
+                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-stone-700 bg-stone-900 px-5 py-3 font-semibold text-stone-100 transition hover:border-stone-500 focus-visible:ring-2 focus-visible:ring-lime-200 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-950"
+                    type="button"
+                    onClick={generatePayload}
+                  >
+                    <RefreshCw aria-hidden="true" />
+                    Generate hash
+                  </button>
+                  <button
+                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-lime-300 px-5 py-3 font-semibold text-stone-950 transition hover:bg-lime-200 focus-visible:ring-2 focus-visible:ring-lime-200 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-950 disabled:opacity-50"
+                    type="button"
+                    disabled={txState === "sending"}
+                    onClick={submitIntentOnchain}
+                  >
+                    {txState === "sending" ? <Loader2 className="spin" aria-hidden="true" /> : <Wallet aria-hidden="true" />}
+                    Submit hash on-chain
+                  </button>
+                </div>
+              </section>
+            </section>
+
+            <section className="grid gap-6 lg:grid-cols-[0.8fr_1.2fr]">
+              <aside className="rounded-md border border-stone-800 bg-stone-950/60 p-5">
+                <p className="text-sm font-semibold text-lime-200">Step 3</p>
+                <h2 className="mt-2 text-2xl font-semibold">Review the commitment</h2>
+                <p className="mt-3 text-sm leading-6 text-stone-400">
+                  The payload stays off-chain. Devnet only receives the hash shown here.
+                </p>
+              </aside>
+
+              <section className="rounded-md border border-stone-800 bg-stone-950/60 p-5">
+                <pre className="max-h-72 overflow-auto rounded-md border border-stone-800 bg-stone-900/80 p-4 font-mono text-sm leading-6 text-stone-200">
+                  {payloadText || formatPayload(buildPayload(composer))}
+                </pre>
+                <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-stone-800 bg-stone-900/70 px-4 py-3">
+                  <span className="min-w-0 break-all font-mono text-sm text-stone-200">
+                    {payloadHash || "Generate or submit to calculate the hash"}
+                  </span>
+                  <button
+                    aria-label="Copy payload hash"
+                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-stone-700 bg-stone-950 text-stone-200 focus-visible:ring-2 focus-visible:ring-lime-200 disabled:opacity-50"
+                    type="button"
+                    disabled={!payloadHash}
+                    onClick={() => copyText("hash", payloadHash)}
+                  >
+                    {copied === "hash" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+                  </button>
+                </div>
+                <AccountReadout
+                  title="Intent account"
+                  rows={[
+                    ["PDA", intentPda || "Unset"],
+                    ["Status", intentAccount?.status ?? "Not fetched"],
+                    ["Hash", intentAccount?.payloadHash ?? "Not fetched"],
+                    ["Executor", intentAccount?.executor ?? "Not fetched"]
+                  ]}
+                />
+              </section>
+            </section>
+
+            <section className="grid gap-6 lg:grid-cols-[0.8fr_1.2fr]">
+              <aside className="rounded-md border border-stone-800 bg-stone-950/60 p-5">
+                <p className="text-sm font-semibold text-lime-200">Step 4</p>
+                <h2 className="mt-2 text-2xl font-semibold">Queue and execute</h2>
+                <p className="mt-3 text-sm leading-6 text-stone-400">
+                  Queue the intent, then let the relayer verify it against the on-chain hash.
+                </p>
+              </aside>
+
+              <section className="rounded-md border border-stone-800 bg-stone-950/60 p-5">
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-lime-300 px-5 py-3 font-semibold text-stone-950 transition hover:bg-lime-200 focus-visible:ring-2 focus-visible:ring-lime-200 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-950 disabled:opacity-50"
+                    type="button"
+                    disabled={!ownerValid || relayerState === "sending"}
+                    onClick={queueInRelayer}
+                    aria-busy={relayerState === "sending"}
+                  >
+                    {relayerState === "sending" ? <Loader2 className="spin" aria-hidden="true" /> : <FileJson aria-hidden="true" />}
+                    Queue intent
+                  </button>
+                  <button
+                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-stone-700 bg-stone-900 px-5 py-3 font-semibold text-stone-100 transition hover:border-stone-500 focus-visible:ring-2 focus-visible:ring-lime-200 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-950 disabled:opacity-50"
+                    type="button"
+                    disabled={!persistedIntent || persistedIntent.status === "executed" || relayerState === "sending"}
+                    onClick={executePersistedIntent}
+                    aria-busy={relayerState === "sending"}
+                  >
+                    <ArrowRight aria-hidden="true" />
+                    Execute
+                  </button>
+                  <button
+                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-stone-700 bg-stone-900 px-5 py-3 font-semibold text-stone-100 transition hover:border-stone-500 focus-visible:ring-2 focus-visible:ring-lime-200 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-950 disabled:opacity-50"
+                    type="button"
+                    disabled={!persistedIntent || relayerState === "sending"}
+                    onClick={refreshPersistedIntent}
+                  >
+                    <RefreshCw aria-hidden="true" />
+                    Check status
+                  </button>
+                </div>
+
+                {relayerMessage ? (
+                  <section
+                    className={`mt-5 flex items-center gap-2 rounded-md border px-4 py-3 text-sm ${
+                      relayerState === "error"
+                        ? "border-red-400/30 bg-red-400/10 text-red-100"
+                        : "border-stone-800 bg-stone-900 text-stone-100"
+                    }`}
+                    role={relayerState === "error" ? "alert" : "status"}
+                  >
+                    {relayerState === "sending" ? <Loader2 className="spin" aria-hidden="true" /> : relayerState === "error" ? <AlertCircle aria-hidden="true" /> : <Check aria-hidden="true" />}
+                    {relayerMessage}
+                  </section>
+                ) : null}
+
+                {persistedIntent ? (
+                  <RelayerQueueCard
+                    item={persistedIntent}
+                    onCopy={(label, text) => copyText(label, text)}
+                    copied={copied}
+                  />
+                ) : (
+                  <div className="mt-5 rounded-md border border-dashed border-stone-800 bg-stone-900/40 p-5 text-sm text-stone-400">
+                    No queued intent yet.
+                  </div>
+                )}
+              </section>
+            </section>
+          </div>
+        ) : (
+          <section className="mt-8 rounded-md border border-dashed border-stone-800 bg-stone-950/40 p-6 text-sm text-stone-400">
+            Create or refresh your vault to unlock payload, hash, and relayer execution steps.
+          </section>
+        )}
+      </div>
     </main>
   );
 }
 
-function WalletPicker({
-  providers,
-  connecting,
-  selectedWalletId,
-  onRefresh,
-  onConnect,
-  onClose
+function LabeledValue({
+  label,
+  value,
+  onChange,
+  error,
+  type = "text"
 }: {
-  providers: WalletProviderOption[];
-  connecting: boolean;
-  selectedWalletId: string;
-  onRefresh: () => void;
-  onConnect: (providerId: string) => void;
-  onClose: () => void;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  error?: string;
+  type?: string;
 }) {
+  const id = label.toLowerCase().replaceAll(" ", "-");
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section
-        aria-labelledby="wallet-picker-title"
-        aria-modal="true"
-        className="wallet-modal"
-        role="dialog"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="wallet-modal-header">
-          <div>
-            <p className="eyebrow">Wallet provider</p>
-            <h2 id="wallet-picker-title">Choose a wallet</h2>
-          </div>
-          <div className="wallet-header-actions">
-            <button aria-label="Refresh wallet providers" className="icon-button" type="button" onClick={onRefresh}>
-              <RefreshCw />
-            </button>
-            <button aria-label="Close wallet picker" className="icon-button" type="button" onClick={onClose}>
-              <XCircle />
-            </button>
-          </div>
-        </div>
+    <label className="grid gap-2 text-sm" htmlFor={id}>
+      <span className="font-medium text-stone-300">{label}</span>
+      <input
+        className="min-h-11 rounded-md border border-stone-800 bg-stone-900 px-3 font-mono text-sm text-stone-100 outline-none transition placeholder:text-stone-600 focus-visible:border-lime-300 focus-visible:ring-2 focus-visible:ring-lime-200/50"
+        id={id}
+        type={type}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {error ? <em className="not-italic text-red-200">{error}</em> : null}
+    </label>
+  );
+}
 
-        {providers.length === 0 ? (
-          <div className="wallet-empty">
-            <Wallet />
-            <strong>No Solana wallet detected</strong>
-            <p>Install Phantom, Solflare, Backpack, or another injected Solana wallet, then refresh this page.</p>
+function ToastRegion({ toasts }: { toasts: Toast[] }) {
+  if (toasts.length === 0) return null;
+
+  return (
+    <div
+      aria-live="polite"
+      className="fixed bottom-4 right-4 z-[60] grid w-[min(360px,calc(100vw-32px))] gap-3"
+    >
+      {toasts.map((toast) => (
+        <article
+          className={`rounded-md border p-4 shadow-2xl shadow-black/40 ${
+            toast.tone === "error"
+              ? "border-red-400/30 bg-red-950/90 text-red-50"
+              : toast.tone === "success"
+                ? "border-lime-300/30 bg-stone-950/95 text-stone-50"
+                : "border-stone-700 bg-stone-950/95 text-stone-50"
+          }`}
+          key={toast.id}
+        >
+          <div className="flex items-start gap-3">
+            <span
+              className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${
+                toast.tone === "error"
+                  ? "bg-red-300"
+                  : toast.tone === "success"
+                    ? "bg-lime-300"
+                    : "bg-stone-400"
+              }`}
+              aria-hidden="true"
+            />
+            <div className="min-w-0">
+              <strong className="block text-sm">{toast.title}</strong>
+              {toast.message ? (
+                <p className="mt-1 break-words text-sm text-stone-300">{toast.message}</p>
+              ) : null}
+            </div>
           </div>
-        ) : (
-          <div className="wallet-list">
-            {providers.map((provider) => (
-              <button
-                className="wallet-option"
-                disabled={connecting}
-                key={provider.id}
-                type="button"
-                onClick={() => onConnect(provider.id)}
-              >
-                <span className="wallet-mark" aria-hidden="true">
-                  <Wallet />
-                </span>
-                <span>
-                  <strong>{provider.name}</strong>
-                  <small>{provider.id === selectedWalletId ? "Connected provider" : "Detected in browser"}</small>
-                </span>
-                {connecting ? <Loader2 className="spin" /> : <ArrowRight />}
-              </button>
-            ))}
-          </div>
-        )}
-      </section>
+        </article>
+      ))}
     </div>
   );
 }
@@ -1022,7 +1028,7 @@ function buildPayload(composer: ComposerState): IntentPayload {
       ...base,
       kind: "system_transfer",
       payload: {
-        to: composer.transferTo || "So11111111111111111111111111111111111111112",
+        to: composer.transferTo.trim(),
         lamports: Number(composer.transferLamports)
       }
     };
@@ -1055,6 +1061,24 @@ function buildPayload(composer: ComposerState): IntentPayload {
   };
 }
 
+function getComposerValidationError(composer: ComposerState) {
+  if (composer.kind !== "system_transfer") return "";
+
+  if (!validatePubkey(composer.transferTo)) {
+    return "Enter a valid recipient wallet before sending a system transfer.";
+  }
+
+  if (!Number.isFinite(composer.transferLamports) || composer.transferLamports <= 0) {
+    return "Lamports must be greater than zero.";
+  }
+
+  if (composer.transferLamports < MIN_NEW_ACCOUNT_TRANSFER_LAMPORTS) {
+    return `Use at least ${MIN_NEW_ACCOUNT_TRANSFER_LAMPORTS.toLocaleString()} lamports for the demo. Tiny transfers fail when the recipient account is new on devnet.`;
+  }
+
+  return "";
+}
+
 function buildExecutionRoute(composer: ComposerState): ExecutionRoute {
   if (composer.routeKind === "jito_bundle") {
     return {
@@ -1085,6 +1109,15 @@ function buildExecutionRoute(composer: ComposerState): ExecutionRoute {
   };
 }
 
+function formatSubmitError(error: unknown) {
+  const message = error instanceof Error ? error.message : "Failed to submit intent";
+  if (message.includes("intent already exists") || message.includes("already in use")) {
+    return "This nonce already has an on-chain intent. Click New nonce, then generate and submit again.";
+  }
+
+  return message;
+}
+
 function ComposerFields({
   composer,
   setComposer
@@ -1093,7 +1126,7 @@ function ComposerFields({
   setComposer: React.Dispatch<React.SetStateAction<ComposerState>>;
 }) {
   return (
-    <div className="field-grid compact">
+    <div className="grid gap-4 md:grid-cols-2">
       <NumberField label="Nonce" value={composer.nonce} onChange={(nonce) => setComposer((value) => ({ ...value, nonce }))} />
       <Field
         label="Expires at"
@@ -1120,6 +1153,7 @@ function ComposerFields({
             label="Lamports"
             value={composer.transferLamports}
             onChange={(transferLamports) => setComposer((value) => ({ ...value, transferLamports }))}
+            hint={`Use ${MIN_NEW_ACCOUNT_TRANSFER_LAMPORTS.toLocaleString()}+ lamports for new devnet recipients.`}
           />
         </>
       ) : null}
@@ -1283,9 +1317,10 @@ function Field({
 }) {
   const id = label.toLowerCase().replaceAll(" ", "-");
   return (
-    <label className="field" htmlFor={id}>
-      <span>{label}</span>
+    <label className="grid gap-2 text-sm" htmlFor={id}>
+      <span className="font-medium text-stone-300">{label}</span>
       <input
+        className="min-h-11 rounded-md border border-stone-800 bg-stone-900 px-3 text-sm text-stone-100 outline-none transition placeholder:text-stone-600 focus-visible:border-lime-300 focus-visible:ring-2 focus-visible:ring-lime-200/50"
         id={id}
         type={type}
         value={value}
@@ -1293,7 +1328,7 @@ function Field({
         readOnly={readOnly}
         onChange={(event) => onChange(event.target.value)}
       />
-      {error ? <em>{error}</em> : null}
+      {error ? <em className="not-italic text-red-200">{error}</em> : null}
     </label>
   );
 }
@@ -1301,23 +1336,27 @@ function Field({
 function NumberField({
   label,
   value,
-  onChange
+  onChange,
+  hint
 }: {
   label: string;
   value: number;
   onChange: (value: number) => void;
+  hint?: string;
 }) {
   const id = label.toLowerCase().replaceAll(" ", "-");
   return (
-    <label className="field" htmlFor={id}>
-      <span>{label}</span>
+    <label className="grid gap-2 text-sm" htmlFor={id}>
+      <span className="font-medium text-stone-300">{label}</span>
       <input
+        className="min-h-11 rounded-md border border-stone-800 bg-stone-900 px-3 text-sm text-stone-100 outline-none transition placeholder:text-stone-600 focus-visible:border-lime-300 focus-visible:ring-2 focus-visible:ring-lime-200/50"
         id={id}
         min={0}
         type="number"
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
       />
+      {hint ? <span className="text-xs text-stone-500">{hint}</span> : null}
     </label>
   );
 }
@@ -1335,9 +1374,14 @@ function SelectField<T extends string>({
 }) {
   const id = label.toLowerCase().replaceAll(" ", "-");
   return (
-    <label className="field" htmlFor={id}>
-      <span>{label}</span>
-      <select id={id} value={value} onChange={(event) => onChange(event.target.value as T)}>
+    <label className="grid gap-2 text-sm" htmlFor={id}>
+      <span className="font-medium text-stone-300">{label}</span>
+      <select
+        className="min-h-11 rounded-md border border-stone-800 bg-stone-900 px-3 text-sm text-stone-100 outline-none transition focus-visible:border-lime-300 focus-visible:ring-2 focus-visible:ring-lime-200/50"
+        id={id}
+        value={value}
+        onChange={(event) => onChange(event.target.value as T)}
+      >
         {options.map((option) => (
           <option key={option} value={option}>
             {option}
@@ -1360,14 +1404,19 @@ function CommandBlock({
   copied: boolean;
 }) {
   return (
-    <div className="command-block">
-      <div>
+    <div className="mt-5 overflow-hidden rounded-md border border-stone-800 bg-stone-950/60">
+      <div className="flex items-center justify-between border-b border-stone-800 px-4 py-3">
         <strong>{title}</strong>
-        <button aria-label={`Copy ${title}`} className="icon-button" type="button" onClick={() => onCopy(command)}>
-          {copied ? <Check /> : <Copy />}
+        <button
+          aria-label={`Copy ${title}`}
+          className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-stone-700 bg-stone-900 text-stone-200 focus-visible:ring-2 focus-visible:ring-lime-200"
+          type="button"
+          onClick={() => onCopy(command)}
+        >
+          {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
         </button>
       </div>
-      <pre>{command}</pre>
+      <pre className="overflow-auto p-4 font-mono text-sm leading-6 text-stone-300">{command}</pre>
     </div>
   );
 }
@@ -1395,39 +1444,48 @@ function RelayerQueueCard({
   }
 
   return (
-    <div className="relayer-card">
-      <div className="relayer-card-header">
-        <div className="queue-title">
+    <div className="mt-5 rounded-md border border-stone-800 bg-stone-900/60 p-4">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
           <StatusDot status={item.status} />
-          <strong>Persisted queue item</strong>
-          <span>{item.status}</span>
+          <strong>Queued intent</strong>
+          <span className="rounded-md border border-stone-700 px-2 py-1 text-xs text-stone-300">{item.status}</span>
         </div>
         <button
           aria-label="Copy queued intent ID"
-          className="icon-button"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-stone-700 bg-stone-950 text-stone-200 focus-visible:ring-2 focus-visible:ring-lime-200"
           type="button"
           onClick={() => onCopy("relayer-queue-id", item.id)}
         >
-          {copied === "relayer-queue-id" ? <Check /> : <Copy />}
+          {copied === "relayer-queue-id" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
         </button>
       </div>
-      <AccountReadout title="Relayer DB record" rows={rows} />
+      <AccountReadout title="Relayer record" rows={rows} />
     </div>
   );
 }
 
 function StatusDot({ status }: { status: QueueItem["status"] | RelayerQueuedIntent["status"] }) {
-  return <span className={`status-dot ${status}`} aria-label={status} />;
+  const color =
+    status === "executed"
+      ? "bg-lime-300"
+      : status === "failed"
+        ? "bg-red-300"
+        : status === "executing"
+          ? "bg-amber-300"
+          : "bg-stone-500";
+
+  return <span className={`h-2.5 w-2.5 rounded-full ${color}`} aria-label={status} />;
 }
 
 function AccountReadout({ title, rows }: { title: string; rows: [string, string][] }) {
   return (
-    <div className="account-readout">
+    <div className="mt-5 rounded-md border border-stone-800 bg-stone-900/70 p-4">
       <strong>{title}</strong>
       {rows.map(([label, value]) => (
-        <div key={label}>
-          <span>{label}</span>
-          <code>{value}</code>
+        <div className="mt-3 grid gap-1 text-sm sm:grid-cols-[140px_1fr]" key={label}>
+          <span className="text-stone-500">{label}</span>
+          <code className="break-all font-mono text-stone-100">{value}</code>
         </div>
       ))}
     </div>

@@ -274,7 +274,9 @@ export async function fetchExecutionIntentAccount(
 
 export async function hashPayloadBytes(payload: string): Promise<string> {
   const bytes = new TextEncoder().encode(payload);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const data = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(data).set(bytes);
+  const digest = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");

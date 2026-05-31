@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
+use std::str::FromStr;
 
 pub const MAGICBLOCK_LOCAL_ER_VALIDATOR: &str = "mAGicPQYBMvcYveUZA5F5UNNwyHvfYh5xkLS2Fr1mev";
 pub const MAGICBLOCK_DEVNET_ASIA_VALIDATOR: &str = "MAS1Dt9qreoRMQ14YQuhg8UTZMMzDdKhmkZMECCzk57";
@@ -98,6 +99,7 @@ pub fn parse_payload_action(intent: &IntentPayload) -> Result<PayloadAction> {
         "system_transfer" => {
             #[derive(Deserialize)]
             struct TransferPayload {
+                #[serde(deserialize_with = "deserialize_pubkey")]
                 to: Pubkey,
                 lamports: u64,
             }
@@ -172,6 +174,14 @@ pub fn parse_payload_action(intent: &IntentPayload) -> Result<PayloadAction> {
             "unsupported payload kind `{other}`; supported kinds are `mock_execution`, `system_transfer`, and `perps_order`"
         ),
     }
+}
+
+fn deserialize_pubkey<'de, D>(deserializer: D) -> std::result::Result<Pubkey, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    Pubkey::from_str(&value).map_err(serde::de::Error::custom)
 }
 
 pub fn parse_execution_route(intent: &IntentPayload) -> Result<ExecutionRoute> {

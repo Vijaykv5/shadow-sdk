@@ -29,6 +29,7 @@ pub fn execute_payload_action(
                 "system_transfer only supports public_rpc and mock_private_bundle routes until route adapters are wired"
             );
             let from = executor.pubkey();
+            ensure_transfer_can_create_recipient(rpc_client, to, *lamports)?;
             let instruction = system_instruction::transfer(&from, to, *lamports);
             let recent_blockhash = rpc_client
                 .get_latest_blockhash()
@@ -51,6 +52,31 @@ pub fn execute_payload_action(
         }
         PayloadAction::PerpsOrder(order) => execute_perps_order(order, route),
     }
+}
+
+fn ensure_transfer_can_create_recipient(
+    rpc_client: &RpcClient,
+    recipient: &solana_sdk::pubkey::Pubkey,
+    lamports: u64,
+) -> Result<()> {
+    let recipient_exists = rpc_client
+        .get_account_with_commitment(recipient, CommitmentConfig::confirmed())
+        .context("failed to check system transfer recipient account")?
+        .value
+        .is_some();
+    if recipient_exists {
+        return Ok(());
+    }
+
+    let rent_exempt_lamports = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .context("failed to fetch rent minimum for system transfer recipient")?;
+    anyhow::ensure!(
+        lamports >= rent_exempt_lamports,
+        "recipient account does not exist yet; send at least {rent_exempt_lamports} lamports to create it, or use an existing devnet wallet as the recipient"
+    );
+
+    Ok(())
 }
 
 pub fn validate_route_policy(action: &PayloadAction, route: &ExecutionRoute) -> Result<()> {

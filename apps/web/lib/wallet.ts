@@ -68,12 +68,20 @@ export function getAvailableWallets(): WalletProviderOption[] {
 }
 
 function uniqueWallets(wallets: Array<WalletProviderOption | null>) {
-  const seen = new Set<BrowserWallet>();
+  const seenWallets = new Set<BrowserWallet>();
+  const seenIds = new Set<string>();
+  const seenNames = new Set<string>();
   const providers: WalletProviderOption[] = [];
 
   for (const provider of wallets) {
-    if (!provider || seen.has(provider.wallet)) continue;
-    seen.add(provider.wallet);
+    if (!provider) continue;
+    const nameKey = provider.name.toLowerCase();
+    if (seenWallets.has(provider.wallet) || seenIds.has(provider.id) || seenNames.has(nameKey)) {
+      continue;
+    }
+    seenWallets.add(provider.wallet);
+    seenIds.add(provider.id);
+    seenNames.add(nameKey);
     providers.push(provider);
   }
 

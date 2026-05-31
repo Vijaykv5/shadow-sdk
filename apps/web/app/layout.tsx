@@ -1,5 +1,15 @@
 import type { Metadata } from "next";
+import localFont from "next/font/local";
+import { WalletProviderRoot } from "@/components/WalletProviderRoot";
+import "@solana/wallet-adapter-react-ui/styles.css";
 import "./globals.css";
+
+const cause = localFont({
+  src: "../public/fonts/Cause/Cause-Medium.ttf",
+  weight: "500",
+  display: "swap",
+  variable: "--font-cause"
+});
 
 export const metadata: Metadata = {
   title: "Shadow SDK Console",
@@ -13,7 +23,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body className={cause.variable}>
+        <WalletProviderRoot>{children}</WalletProviderRoot>
+      </body>
     </html>
   );
 }
