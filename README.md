@@ -1,5 +1,15 @@
 # Shadow SDK
 
+<p align="center">
+  <img src="https://img.shields.io/badge/status-beta-f59e0b?style=for-the-badge" alt="Beta status" />
+  <img src="https://img.shields.io/badge/version-v0.1.1-111827?style=for-the-badge" alt="Version v0.1.1" />
+  <img src="https://img.shields.io/badge/network-solana_devnet-14f195?style=for-the-badge" alt="Solana devnet" />
+  <img src="https://img.shields.io/badge/program-anchor-8b5cf6?style=for-the-badge" alt="Anchor program" />
+  <img src="https://img.shields.io/badge/sdk-shadow--stealth-ef4444?style=for-the-badge" alt="shadow-stealth SDK" />
+  <img src="https://img.shields.io/badge/relayer-render-46e3b7?style=for-the-badge" alt="Render relayer" />
+  <img src="https://img.shields.io/badge/app-next.js-000000?style=for-the-badge" alt="Next.js app" />
+</p>
+
 Shadow SDK is a Solana private intent execution project.
 
 It lets a user submit only a **hash** of an action on-chain, while the real
