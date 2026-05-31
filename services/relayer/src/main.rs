@@ -1,25 +1,35 @@
 use std::{
     fs::{self, OpenOptions},
     io::ErrorKind,
+    net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
+    sync::Arc,
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anchor_lang::AccountDeserialize;
 use anyhow::{Context, Result};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
 use clap::{Parser, Subcommand, ValueEnum};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use shadow_stealth::{derive_intent_pda, derive_vault_pda, execute_intent};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
     hash::hash,
     pubkey::Pubkey,
-    signature::{read_keypair_file, Signer},
+    signature::{read_keypair_file, Keypair, Signer},
 };
 use stealth_vault::{ExecutionIntent, INTENT_STATUS_PENDING};
+use tower_http::cors::CorsLayer;
 
 mod executor;
 mod payload;
@@ -54,6 +64,8 @@ enum Command {
     ExecuteOnce(ExecuteOnceArgs),
     /// Scan a payload directory and execute every matching pending intent.
     Run(RunArgs),
+    /// Start a stateless HTTP relayer API.
+    Serve(ServeArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -136,6 +148,29 @@ struct RunArgs {
     max_retries: Option<u8>,
 }
 
+#[derive(Debug, Parser)]
+struct ServeArgs {
+    /// TOML config file. CLI flags override values from this file.
+    #[arg(long)]
+    config: Option<PathBuf>,
+
+    /// Cluster to read and submit transactions to.
+    #[arg(long, value_enum)]
+    cluster: Option<Cluster>,
+
+    /// Override the RPC URL. Takes precedence over --cluster.
+    #[arg(long)]
+    rpc_url: Option<String>,
+
+    /// Current ephemeral authority keypair path. This signer marks intents executed.
+    #[arg(long)]
+    executor_keypair: Option<String>,
+
+    /// HTTP bind address.
+    #[arg(long, default_value = "127.0.0.1:8787")]
+    bind: SocketAddr,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 enum Cluster {
@@ -181,6 +216,44 @@ struct RunConfig {
     max_retries: u8,
 }
 
+struct ServeConfig {
+    rpc_url: String,
+    executor_keypair: String,
+    bind: SocketAddr,
+}
+
+#[derive(Clone)]
+struct ApiState {
+    rpc_client: Arc<RpcClient>,
+    rpc_url: String,
+    executor: Arc<Keypair>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExecuteOnceRequest {
+    owner: Pubkey,
+    payload: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+struct ExecuteOnceResponse {
+    intent: Pubkey,
+    vault: Pubkey,
+    owner: Pubkey,
+    executor: Pubkey,
+    nonce: u64,
+    signature: String,
+    payload_hash: String,
+}
+
+#[derive(Debug, Serialize)]
+struct HealthResponse {
+    status: &'static str,
+}
+
+#[derive(Debug)]
+struct ApiError(anyhow::Error);
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -190,6 +263,11 @@ fn main() -> Result<()> {
         Command::QueueStatus(args) => handle_queue_status(args),
         Command::ExecuteOnce(args) => handle_execute_once(args),
         Command::Run(args) => handle_run(args),
+        Command::Serve(args) => {
+            let runtime =
+                tokio::runtime::Runtime::new().context("failed to start tokio runtime")?;
+            runtime.block_on(handle_serve(args))
+        }
     }
 }
 
@@ -313,6 +391,77 @@ fn handle_run(args: RunArgs) -> Result<()> {
     Ok(())
 }
 
+async fn handle_serve(args: ServeArgs) -> Result<()> {
+    let config = resolve_serve_config(args)?;
+    let rpc_client =
+        RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::confirmed());
+    let executor = read_executor_keypair(&config.executor_keypair)?;
+    let state = ApiState {
+        rpc_client: Arc::new(rpc_client),
+        rpc_url: config.rpc_url,
+        executor: Arc::new(executor),
+    };
+    let app = Router::new()
+        .route("/health", get(health))
+        .route("/execute-once", post(execute_once_http))
+        .layer(CorsLayer::permissive())
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind(config.bind)
+        .await
+        .with_context(|| format!("failed to bind relayer API to {}", config.bind))?;
+
+    println!("shadow relayer API listening on http://{}", config.bind);
+    axum::serve(listener, app)
+        .await
+        .context("relayer API server failed")
+}
+
+async fn health() -> Json<HealthResponse> {
+    Json(HealthResponse { status: "ok" })
+}
+
+async fn execute_once_http(
+    State(state): State<ApiState>,
+    Json(request): Json<ExecuteOnceRequest>,
+) -> Result<Json<ExecuteOnceResponse>, ApiError> {
+    let rpc_client = Arc::clone(&state.rpc_client);
+    let rpc_url = state.rpc_url.clone();
+    let executor = Arc::clone(&state.executor);
+    let payload = request.payload;
+    let owner = request.owner;
+
+    let response = tokio::task::spawn_blocking(move || {
+        let loaded = load_payload_value(payload)?;
+        ensure_not_expired(&loaded.intent)?;
+        let intent_account = fetch_intent(&rpc_client, owner, loaded.intent.nonce)?;
+        validate_intent_for_execution(&intent_account, loaded.hash, executor.pubkey())?;
+        execute_payload_action(
+            &rpc_client,
+            &loaded.action,
+            &loaded.route,
+            executor.as_ref(),
+        )
+        .context("failed to execute private payload action")?;
+        let result = execute_intent(&rpc_client, owner, executor.as_ref(), loaded.intent.nonce)
+            .with_context(|| format!("failed to execute intent on {rpc_url}"))?;
+
+        Ok::<_, anyhow::Error>(ExecuteOnceResponse {
+            intent: result.intent,
+            vault: result.vault,
+            owner: result.owner,
+            executor: result.executor,
+            nonce: result.nonce,
+            signature: result.signature.to_string(),
+            payload_hash: format_hash(&loaded.hash),
+        })
+    })
+    .await
+    .map_err(|err| ApiError(anyhow::anyhow!("relayer worker task failed: {err}")))?
+    .map_err(ApiError)?;
+
+    Ok(Json(response))
+}
+
 fn resolve_execute_once_config(args: ExecuteOnceArgs) -> Result<ExecuteOnceConfig> {
     let file_config = read_relayer_config(args.config.as_deref())?;
     let cluster = args
@@ -360,6 +509,27 @@ fn resolve_run_config(args: RunArgs) -> Result<RunConfig> {
             .or(file_config.max_retries)
             .unwrap_or(DEFAULT_MAX_RETRIES),
         watch: args.watch,
+    })
+}
+
+fn resolve_serve_config(args: ServeArgs) -> Result<ServeConfig> {
+    let file_config = read_relayer_config(args.config.as_deref())?;
+    let cluster = args
+        .cluster
+        .or(file_config.cluster)
+        .unwrap_or(Cluster::Localnet);
+    let rpc_url = args
+        .rpc_url
+        .or(file_config.rpc_url)
+        .unwrap_or_else(|| cluster.rpc_url().to_string());
+
+    Ok(ServeConfig {
+        rpc_url,
+        executor_keypair: required_arg(
+            args.executor_keypair.or(file_config.executor_keypair),
+            "executor_keypair",
+        )?,
+        bind: args.bind,
     })
 }
 
@@ -418,6 +588,22 @@ fn read_payload_file(path: &Path) -> Result<LoadedPayload> {
         .with_context(|| format!("failed to validate payload schema {}", path.display()))?;
     let route = parse_execution_route(&intent)
         .with_context(|| format!("failed to validate execution route {}", path.display()))?;
+    let hash = hash(&bytes).to_bytes();
+
+    Ok(LoadedPayload {
+        intent,
+        hash,
+        action,
+        route,
+    })
+}
+
+fn load_payload_value(value: serde_json::Value) -> Result<LoadedPayload> {
+    let bytes = serde_json::to_vec(&value).context("failed to serialize payload JSON")?;
+    let intent =
+        serde_json::from_value::<IntentPayload>(value).context("failed to parse payload JSON")?;
+    let action = parse_payload_action(&intent).context("failed to validate payload schema")?;
+    let route = parse_execution_route(&intent).context("failed to validate execution route")?;
     let hash = hash(&bytes).to_bytes();
 
     Ok(LoadedPayload {
@@ -753,6 +939,16 @@ fn print_execution_result(result: &shadow_stealth::ExecuteIntentResult) {
     println!("signature: {}", result.signature);
 }
 
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let body = Json(serde_json::json!({
+            "error": format!("{:#}", self.0),
+        }));
+
+        (StatusCode::BAD_REQUEST, body).into_response()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -897,6 +1093,31 @@ payload = "{}"
         );
         assert_eq!(loaded.route, ExecutionRoute::PublicRpc);
         assert_eq!(loaded.hash, hash(bytes.as_bytes()).to_bytes());
+    }
+
+    #[test]
+    fn loads_http_payload_and_hashes_canonical_json() {
+        let value = serde_json::json!({
+            "nonce": 7,
+            "kind": "mock_execution",
+            "payload": {
+                "message": "hello shadow"
+            },
+            "expires_at": null
+        });
+        let canonical_bytes =
+            serde_json::to_vec(&value).expect("payload should serialize canonically");
+
+        let loaded = load_payload_value(value).expect("http payload should load");
+
+        assert_eq!(loaded.intent.nonce, 7);
+        assert_eq!(
+            loaded.action,
+            PayloadAction::MockExecution {
+                message: "hello shadow".to_string()
+            }
+        );
+        assert_eq!(loaded.hash, hash(&canonical_bytes).to_bytes());
     }
 
     #[test]

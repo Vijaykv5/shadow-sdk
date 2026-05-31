@@ -16,6 +16,27 @@ The first implemented path is the stealth vault layer:
 
 See [docs/architecture/repository-structure.md](docs/architecture/repository-structure.md) for the production folder architecture and ownership rules.
 
+## Local Demo
+
+After starting a local validator and deploying the Anchor program:
+
+```bash
+solana-test-validator
+anchor build
+anchor deploy --provider.cluster localnet
+```
+
+Create a fresh happy-path demo:
+
+```bash
+cargo run -p shadow-cli -- demo-local
+```
+
+The command generates owner and ephemeral-authority keypairs under
+`target/shadow-demo/`, airdrops local SOL, creates a vault, submits a mock
+intent hash, writes the matching payload, and prints the exact relayer `serve`
+command plus `curl` request for `POST /execute-once`.
+
 ## Rust Crates
 
 Shadow SDK is structured so downstream Solana apps can depend on the reusable

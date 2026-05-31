@@ -109,6 +109,46 @@ cargo run -p shadow-relayer -- execute-once \
 
 The executor keypair must be the vault's current ephemeral authority.
 
+## HTTP API
+
+For app integrations, run the relayer as a stateless HTTP backend:
+
+```bash
+cargo run -p shadow-relayer -- serve \
+  --config examples/relayer.localnet.toml \
+  --executor-keypair ~/.config/solana/ephemeral.json \
+  --bind 127.0.0.1:8787
+```
+
+Check health:
+
+```bash
+curl http://127.0.0.1:8787/health
+```
+
+Verify and execute one pending intent:
+
+```bash
+curl -X POST http://127.0.0.1:8787/execute-once \
+  -H 'content-type: application/json' \
+  -d '{
+    "owner": "<OWNER_PUBKEY>",
+    "payload": {
+      "nonce": 1,
+      "kind": "mock_execution",
+      "payload": {
+        "message": "hello shadow"
+      },
+      "expires_at": null
+    }
+  }'
+```
+
+The API hashes the canonical compact JSON inside `payload`, verifies that hash
+against the on-chain intent, executes the private action, and then marks the
+intent executed. There is no database in this mode; the on-chain intent account
+is the source of truth.
+
 ## Queue Layout
 
 The `run` command treats `--payload-dir` as a queue root and creates these folders if they do not exist:

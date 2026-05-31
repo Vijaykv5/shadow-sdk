@@ -26,11 +26,14 @@ import {
   clusterRpcUrl,
   createInitializeVaultTransaction,
   createSubmitIntentTransaction,
+  DEFAULT_RELAYER_URL,
   deriveIntentPda,
   deriveVaultPda,
+  executeIntentWithRelayer,
   fetchExecutionIntentAccount,
   fetchVaultAccount,
   formatPayload,
+  hashIntentPayload,
   hashPayloadBytes,
   IntentKind,
   IntentPayload,
@@ -98,6 +101,7 @@ export function ShadowConsole() {
   const [ephemeralAuthority, setEphemeralAuthority] = useState("");
   const [executorKeypair, setExecutorKeypair] = useState("~/.config/solana/ephemeral.json");
   const [payloadDir, setPayloadDir] = useState("payloads");
+  const [relayerUrl, setRelayerUrl] = useState(DEFAULT_RELAYER_URL);
   const [composer, setComposer] = useState<ComposerState>(initialComposer);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [payloadText, setPayloadText] = useState("");
@@ -115,6 +119,16 @@ export function ShadowConsole() {
   const [vaultAccount, setVaultAccount] = useState<VaultAccount | null>(null);
   const [intentAccount, setIntentAccount] = useState<ExecutionIntentAccount | null>(null);
   const [savedPayloadPath, setSavedPayloadPath] = useState("");
+  const [relayerState, setRelayerState] = useState<"idle" | "sending" | "success" | "error">(
+    "idle"
+  );
+  const [relayerMessage, setRelayerMessage] = useState("");
+  const [relayerResult, setRelayerResult] = useState<{
+    signature: string;
+    intent: string;
+    vault: string;
+    payloadHash: string;
+  } | null>(null);
 
   const rpcUrl = clusterRpcUrl(cluster);
   const connection = useMemo(() => new Connection(rpcUrl, "confirmed"), [rpcUrl]);
@@ -158,10 +172,11 @@ export function ShadowConsole() {
       `executor_keypair = "${executorKeypair}"`,
       `payload = "examples/mock-intent.json"`,
       `payload_dir = "${payloadDir}"`,
+      `# web relayer url: ${relayerUrl}`,
       "poll_seconds = 5",
       "max_retries = 3"
     ].join("\n");
-  }, [cluster, executorKeypair, owner, payloadDir]);
+  }, [cluster, executorKeypair, owner, payloadDir, relayerUrl]);
 
   const submitIntentCommand = useMemo(() => {
     const hash = payloadHash || "<PAYLOAD_HASH>";
@@ -175,13 +190,11 @@ export function ShadowConsole() {
 
   const runRelayerCommand = useMemo(() => {
     return [
-      "cargo run -p shadow-relayer -- run \\",
-      `  --owner ${owner || "<OWNER_PUBKEY>"} \\`,
+      "cargo run -p shadow-relayer -- serve \\",
       `  --executor-keypair ${executorKeypair} \\`,
-      `  --payload-dir ${payloadDir} \\`,
-      "  --max-retries 3"
+      "  --bind 127.0.0.1:8787"
     ].join("\n");
-  }, [executorKeypair, owner, payloadDir]);
+  }, [executorKeypair]);
 
   const deployCommand = useMemo(() => {
     return [
@@ -299,6 +312,43 @@ export function ShadowConsole() {
     }
   }
 
+  async function executeViaRelayer() {
+    if (!ownerValid) {
+      setRelayerState("error");
+      setRelayerMessage("Set a valid owner wallet before calling the relayer.");
+      return;
+    }
+
+    setRelayerState("sending");
+    setRelayerMessage("Sending private payload to relayer...");
+    setRelayerResult(null);
+
+    try {
+      const payload = buildPayload(composer);
+      const hash = payloadHash || (await hashIntentPayload(payload));
+      setPayloadText(formatPayload(payload));
+      setPayloadHash(hash);
+
+      const result = await executeIntentWithRelayer({
+        relayerUrl,
+        owner,
+        payload
+      });
+      setRelayerResult({
+        signature: result.signature,
+        intent: result.intent,
+        vault: result.vault,
+        payloadHash: result.payload_hash
+      });
+      setRelayerState("success");
+      setRelayerMessage(`Relayer executed intent: ${result.signature}`);
+      await refreshIntent();
+    } catch (error) {
+      setRelayerState("error");
+      setRelayerMessage(error instanceof Error ? error.message : "Relayer execution failed");
+    }
+  }
+
   async function refreshVault() {
     if (!vaultPda) return;
     setVaultAccount(await fetchVaultAccount(connection, vaultPda));
@@ -331,7 +381,7 @@ export function ShadowConsole() {
     const payload = buildPayload(composer);
     const text = formatPayload(payload);
     setPayloadText(text);
-    setPayloadHash(await hashPayloadBytes(text));
+    setPayloadHash(await hashIntentPayload(payload));
   }
 
   async function addToQueue() {
@@ -480,6 +530,13 @@ export function ShadowConsole() {
               onChange={setPayloadDir}
               placeholder="payloads"
             />
+            <Field
+              label="Relayer URL"
+              value={relayerUrl}
+              onChange={setRelayerUrl}
+              placeholder="http://127.0.0.1:8787"
+              type="url"
+            />
           </div>
           <CommandBlock
             title="Create Vault"
@@ -597,18 +654,69 @@ export function ShadowConsole() {
         </section>
 
         <section className="panel panel-tall">
-          <PanelHeader icon={<Terminal />} title="Relayer Queue" action="Step 4" />
+          <PanelHeader icon={<Terminal />} title="Relayer API" action="Step 4" />
           <CommandBlock
-            title="Run Relayer"
+            title="Start Relayer API"
             command={runRelayerCommand}
             onCopy={(text) => copyText("relayer", text)}
             copied={copied === "relayer"}
           />
+          <div className="button-row">
+            <button
+              className="button button-primary"
+              type="button"
+              disabled={!ownerValid || !intentPda || relayerState === "sending"}
+              onClick={executeViaRelayer}
+              aria-busy={relayerState === "sending"}
+            >
+              {relayerState === "sending" ? <Loader2 className="spin" /> : <RadioTower />}
+              Execute via relayer
+            </button>
+            <button
+              className="button"
+              type="button"
+              disabled={relayerState === "sending"}
+              onClick={() => {
+                setRelayerMessage("");
+                setRelayerState("idle");
+                setRelayerResult(null);
+              }}
+            >
+              <RefreshCw />
+              Reset
+            </button>
+          </div>
+          {relayerMessage ? (
+            <section
+              className={relayerState === "error" ? "notice notice-error compact-notice" : "notice compact-notice"}
+              role={relayerState === "error" ? "alert" : "status"}
+            >
+              {relayerState === "sending" ? (
+                <Loader2 className="spin" />
+              ) : relayerState === "error" ? (
+                <AlertCircle />
+              ) : (
+                <Check />
+              )}
+              {relayerMessage}
+            </section>
+          ) : null}
+          {relayerResult ? (
+            <AccountReadout
+              title="Relayer result"
+              rows={[
+                ["Signature", relayerResult.signature],
+                ["Intent", relayerResult.intent],
+                ["Vault", relayerResult.vault],
+                ["Hash", relayerResult.payloadHash]
+              ]}
+            />
+          ) : null}
           <div className="queue-list">
             {queue.length === 0 ? (
               <div className="empty-state">
                 <FileJson />
-                <p>No queued intents yet.</p>
+                <p>No local queue items yet.</p>
               </div>
             ) : (
               queue.map((item) => (

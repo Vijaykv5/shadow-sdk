@@ -1,7 +1,7 @@
 # Shadow SDK Web Console
 
 Next.js operator console for composing private intent payloads, submitting matching
-intent hashes on-chain, and handing the private payload to the relayer queue.
+intent hashes on-chain, and handing the private payload to the relayer API.
 
 ## Run
 
@@ -12,14 +12,31 @@ npm run dev
 
 Open `http://localhost:3000`.
 
+By default the console calls the local relayer API at `http://127.0.0.1:8787`.
+Override it with:
+
+```bash
+NEXT_PUBLIC_RELAYER_URL=http://127.0.0.1:8787 npm run dev
+```
+
 ## Flow
 
 1. Connect a browser wallet.
 2. Create or refresh the vault PDA for the owner wallet.
 3. Compose a payload and generate its hash.
 4. Submit the hash on-chain with the ephemeral authority wallet.
-5. Save the private payload into `payloads/pending`.
-6. Run the Rust relayer to verify, execute, and archive the payload.
+5. Start the Rust relayer API:
+
+```bash
+cargo run -p shadow-relayer -- serve \
+  --executor-keypair ~/.config/solana/ephemeral.json \
+  --bind 127.0.0.1:8787
+```
+
+6. Click **Execute via relayer** in the web console.
+
+The web flow hashes canonical compact JSON for the HTTP relayer path. The older
+queue/file flow still hashes exact file bytes.
 
 ## Checks
 

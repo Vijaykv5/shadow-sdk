@@ -150,6 +150,10 @@ svg {
   color: #ffd9d4;
 }
 
+.compact-notice {
+  margin: 14px 0 0;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

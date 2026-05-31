@@ -78,6 +78,19 @@ export type ExecutionIntentAccount = {
   bump: number;
 };
 
+export type RelayerExecuteResponse = {
+  intent: string;
+  vault: string;
+  owner: string;
+  executor: string;
+  nonce: number;
+  signature: string;
+  payload_hash: string;
+};
+
+export const DEFAULT_RELAYER_URL =
+  process.env.NEXT_PUBLIC_RELAYER_URL ?? "http://127.0.0.1:8787";
+
 const DISCRIMINATORS = {
   initializeVault: Uint8Array.from([48, 191, 163, 44, 71, 129, 63, 164]),
   submitExecutionIntent: Uint8Array.from([144, 64, 85, 209, 247, 3, 129, 47]),
@@ -219,8 +232,39 @@ export async function hashPayloadBytes(payload: string): Promise<string> {
     .join("");
 }
 
+export async function hashIntentPayload(payload: IntentPayload): Promise<string> {
+  return hashPayloadBytes(canonicalPayload(payload));
+}
+
 export function formatPayload(value: IntentPayload): string {
   return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+export function canonicalPayload(value: IntentPayload): string {
+  return JSON.stringify(value);
+}
+
+export async function executeIntentWithRelayer({
+  relayerUrl,
+  owner,
+  payload
+}: {
+  relayerUrl: string;
+  owner: string;
+  payload: IntentPayload;
+}): Promise<RelayerExecuteResponse> {
+  const response = await fetch(`${relayerUrl.replace(/\/$/, "")}/execute-once`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner, payload })
+  });
+  const result = (await response.json()) as RelayerExecuteResponse & { error?: string };
+
+  if (!response.ok) {
+    throw new Error(result.error ?? "Relayer execution failed");
+  }
+
+  return result;
 }
 
 export function clusterRpcUrl(cluster: Cluster): string {

@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 shadow-stealth = { path = "../crates/stealth" }
 shellexpand.workspace = true
 solana-client.workspace = true

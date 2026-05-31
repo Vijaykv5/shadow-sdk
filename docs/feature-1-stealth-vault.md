@@ -114,6 +114,16 @@ anchor build
 anchor deploy
 ```
 
+Generate a fresh local demo path:
+
+```bash
+cargo run -p shadow-cli -- demo-local
+```
+
+This checks that the local validator is reachable, verifies the program is
+deployed, creates funded demo keypairs, creates a vault, submits a mock intent
+hash, and prints the relayer API command plus `curl` request to execute it.
+
 Then create a vault:
 
 ```bash
