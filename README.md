@@ -1,60 +1,64 @@
 # Shadow SDK
 
-Shadow SDK is a Solana infrastructure monorepo for private and MEV-resistant execution.
+Shadow SDK is a Solana private intent execution project.
 
-The current implementation focuses on stealth vaults, hashed off-chain execution intents, and a relayer that verifies private payloads before marking intents executed.
+It lets a user submit only a **hash** of an action on-chain, while the real
+private payload stays off-chain with a relayer. The relayer verifies the payload
+against the on-chain hash, executes it, and marks the intent as executed.
 
-The first implemented path is the stealth vault layer:
+## Architecture
 
-- create a per-owner vault PDA
-- rotate a temporary execution authority
-- submit hashed execution intents from the current ephemeral authority
-- verify and execute private payloads through the relayer
-- validate perps-shaped intents and route policy for future private bundle execution
+![Shadow SDK architecture](docs/architecture/architecture.png)
 
-## Repository Map
+## Links
 
-See [docs/architecture/repository-structure.md](docs/architecture/repository-structure.md) for the production folder architecture and ownership rules.
+| Item | Link |
+| --- | --- |
+| Deployed program | `3Nz8wUHewqpMuceSLnoeTMyPLaDt9kNzsVMWTCeVMD6M` |
+| Rust SDK crate | [`shadow-stealth`](https://crates.io/crates/shadow-stealth) |
+| Relayer health | [`https://shadow-sdk-1.onrender.com/health`](https://shadow-sdk-1.onrender.com/health) |
+| Architecture doc | [`docs/architecture/repository-structure.md`](docs/architecture/repository-structure.md) |
+| Architecture | [`docs/architecture/architecture.png`](docs/architecture/architecture.png) |
+| Web console | [`apps/web/`](apps/web/) |
+| On-chain program | [`programs/stealth-vault/`](programs/stealth-vault/) |
+| Rust SDK source | [`crates/stealth/`](crates/stealth/) |
+| Relayer service | [`services/relayer/`](services/relayer/) |
+| CLI | [`cli/`](cli/) |
+| Examples | [`examples/`](examples/) |
 
-## Devnet Demo
+## Main Pieces
 
-Shadow SDK now defaults to devnet for the Anchor provider, web console, CLI
-examples, and relayer config:
+- `stealth-vault`: Solana program for vaults and execution intents.
+- `shadow-stealth`: Rust SDK for apps, CLI, and relayer integrations.
+- `shadow-relayer`: off-chain service that verifies and executes private payloads.
+- `apps/web`: demo console for creating and executing intents.
+- `shadow-cli`: terminal tool for localnet/devnet testing.
 
-```bash
-solana config set --url devnet
-anchor build
-anchor deploy
-```
+## Quick Commands
 
-Check the deployed program:
+Check the devnet program:
 
 ```bash
 solana program show 3Nz8wUHewqpMuceSLnoeTMyPLaDt9kNzsVMWTCeVMD6M --url devnet
 ```
 
-Use `examples/relayer.devnet.toml` for relayer commands.
+Install the SDK:
 
-## Rust Crates
-
-Shadow SDK is structured so downstream Solana apps can depend on the reusable
-SDK crate directly:
-
-```toml
-[dependencies]
-shadow-stealth = "0.1.0"
+```bash
+cargo add shadow-stealth
 ```
 
-During early development:
+Run tests:
 
-```toml
-shadow-stealth = { git = "https://github.com/Vijaykv5/shadow-sdk" }
+```bash
+cargo test
 ```
 
-The published crates are:
+Run the relayer:
 
-- `shadow-stealth`: user-facing Rust SDK
-- `stealth-vault`: lower-level Anchor program interface crate
-
-See [docs/publishing-crates.md](docs/publishing-crates.md) for the crates.io
-publish flow.
+```bash
+cargo run -p shadow-relayer -- serve \
+  --cluster devnet \
+  --executor-keypair ~/.config/solana/ephemeral.json \
+  --bind 127.0.0.1:8787
+```

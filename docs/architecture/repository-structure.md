@@ -1,75 +1,114 @@
-# Shadow SDK Repository Structure
+# Shadow SDK Architecture
 
-Keep Shadow SDK minimal at the root, but leave room to grow.
+Shadow SDK is a Solana private intent execution stack.
 
-## Current Structure
+Users commit only a payload hash on-chain. The private payload stays off-chain
+with the relayer, which verifies the hash before executing and marking the
+intent complete.
+
+## Deployment
+
+| Item | Value |
+| --- | --- |
+| Network | Solana devnet |
+| Program | `stealth-vault` |
+| Program ID | `3Nz8wUHewqpMuceSLnoeTMyPLaDt9kNzsVMWTCeVMD6M` |
+| Web console | Next.js app in `apps/web/` |
+| Relayer API | Rust service in `services/relayer/` |
+
+## Architecture
+
+```mermaid
+flowchart LR
+    User["User Wallet"] --> Web["Next.js Web Console"]
+
+    Web -->|"Create vault<br/>Submit payload hash"| Program["Solana Program<br/>stealth-vault"]
+    Web -->|"Private payload<br/>(off-chain)"| Relayer["Shadow Relayer"]
+
+    Relayer --> Hash["Hash Payload"]
+    Hash --> Verify["Verify Against<br/>On-chain Intent"]
+    Verify -->|"Hash matches"| Execute["Execute Action"]
+    Execute -->|"Mark executed"| Program
+
+    Program --> Vault["Vault PDA<br/>owner + ephemeral authority"]
+    Program --> Intent["ExecutionIntent PDA<br/>nonce + hash + status"]
+
+    SDK["shadow-stealth<br/>Rust SDK"] --> Web
+    SDK --> CLI["Shadow CLI"]
+    SDK --> Relayer
+    SDK --> Program
+
+    CLI -->|"Operator commands"| Program
+
+    Execute -. "future" .-> Jito["Jito Bundles"]
+    Execute -. "future" .-> Drift["Drift / Perps"]
+    Execute -. "future" .-> MagicBlock["MagicBlock ER / PER"]
+
+    classDef user fill:#d9f99d,stroke:#84cc16,color:#111827,stroke-width:2px;
+    classDef app fill:#e0f2fe,stroke:#0284c7,color:#0f172a,stroke-width:2px;
+    classDef chain fill:#ede9fe,stroke:#7c3aed,color:#111827,stroke-width:2px;
+    classDef relayer fill:#fef3c7,stroke:#d97706,color:#111827,stroke-width:2px;
+    classDef sdk fill:#fee2e2,stroke:#dc2626,color:#111827,stroke-width:2px;
+    classDef future fill:#f3f4f6,stroke:#6b7280,color:#374151,stroke-dasharray: 5 5;
+
+    class User user;
+    class Web,CLI app;
+    class Program,Vault,Intent chain;
+    class Relayer,Hash,Verify,Execute relayer;
+    class SDK sdk;
+    class Jito,Drift,MagicBlock future;
+```
+
+## Repository Map
 
 ```text
 shadow-sdk/
-├── Anchor.toml
-├── Cargo.toml
-├── README.md
-├── cli/
-├── crates/
-│   └── stealth/
-├── docs/
-├── examples/
-├── idl/
-│   └── stealth_vault.json
-├── programs/
-│   └── stealth-vault/
-└── services/
-    └── relayer/
+├── apps/web/                 # Next.js demo console
+├── cli/                      # operator/developer CLI
+├── crates/stealth/           # shadow-stealth Rust SDK
+├── docs/                     # architecture notes and runbooks
+├── examples/                 # sample relayer configs and payloads
+├── idl/stealth_vault.json    # checked-in Anchor IDL
+├── programs/stealth-vault/   # Anchor on-chain program
+└── services/relayer/         # off-chain intent verifier/executor
 ```
 
-## Why These Folders Exist
+## What Each Part Does
 
-`programs/` is for on-chain Anchor programs. Add one folder per program, for example `programs/shadow-execution`.
+| Path | Purpose |
+| --- | --- |
+| `programs/stealth-vault/` | On-chain Anchor program for vaults and execution intents. |
+| `crates/stealth/` | Rust SDK for PDA derivation, payload hashing, instruction builders, and transactions. |
+| `services/relayer/` | Verifies private payloads against on-chain hashes, executes actions, and marks intents executed. |
+| `apps/web/` | Demo UI for wallet connection, vault setup, intent creation, queueing, and execution. |
+| `cli/` | Terminal tool for local/devnet testing and operator commands. |
+| `examples/` | Ready-to-use payloads and relayer config files. |
+| `idl/` | Public program interface for SDKs and integrations. |
 
-`crates/stealth/` is the reusable Rust SDK for vault and intent account derivation plus transaction builders. Add more crates only when there is real shared logic to extract.
+## Current Demo Flow
 
-`cli/` is the operator/developer command-line tool. Keep it thin; real logic should live in `crates/`.
+1. Connect wallet in the web console.
+2. Create or refresh the user vault PDA.
+3. Compose a private payload.
+4. Submit only the payload hash to `stealth-vault`.
+5. Send the private payload to the relayer.
+6. Relayer verifies the hash, executes, and marks the intent executed.
 
-`services/relayer/` is for the first infrastructure worker. The current relayer verifies a private payload file against an on-chain intent hash and marks the intent executed. Add more service folders only when they become real deployable binaries.
+## Built vs Future
 
-`idl/` is for stable, checked-in Anchor IDLs that SDK users can consume. Anchor build output still goes to `target/idl`; copy stable IDLs here when they are part of the public interface.
+Built:
 
-`examples/` is for small usage examples. Do not put core protocol logic here.
+- Vault PDA creation.
+- Ephemeral authority rotation.
+- Hashed intent submission.
+- Intent cancel and execute lifecycle.
+- Rust SDK, CLI, web console, and relayer API.
+- Mock execution, system transfer support, and perps-shaped intent validation.
 
-`docs/` is for architecture notes and runbooks.
+Future:
 
-## Anchor vs Cargo
-
-Anchor owns:
-
-- `Anchor.toml`
-- `programs/*`
-- generated `target/idl/*`
-- generated `target/deploy/*`
-
-Cargo owns:
-
-- root `Cargo.toml`
-- `Cargo.lock`
-- `cli/`
-- `crates/*`
-- `services/*`
-- `programs/*` when added as workspace members
-
-Use exactly one `Anchor.toml` and exactly one root Cargo workspace. Do not run `anchor init` inside subfolders.
-
-## Add Later, Not Now
-
-Only add these when needed:
-
-```text
-packages/ts-sdk/          # future TypeScript SDK
-services/keeper/          # future keeper bot
-services/jito-searcher/   # future Jito bundle/searcher worker
-config/                   # real cluster config templates
-ops/                      # Docker, Helm, deployment manifests
-tests/integration/        # cross-program integration tests
-scripts/                  # release/build automation
-```
-
-That keeps the repo clean today while still giving Shadow SDK a path to become a serious Solana infrastructure project.
+- Production Jito bundle adapter.
+- Drift/perps execution adapter.
+- MagicBlock ER/PER delegation and commit hooks.
+- Hosted relayer hardening, auth, monitoring, and rate limits.
+- TypeScript SDK package for frontend integrations.
