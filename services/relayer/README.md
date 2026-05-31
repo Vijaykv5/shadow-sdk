@@ -146,8 +146,93 @@ curl -X POST http://127.0.0.1:8787/execute-once \
 
 The API hashes the canonical compact JSON inside `payload`, verifies that hash
 against the on-chain intent, executes the private action, and then marks the
-intent executed. There is no database in this mode; the on-chain intent account
-is the source of truth.
+intent executed.
+
+### Postgres / Neon Persistence
+
+`serve` uses an in-memory queue by default. Set `DATABASE_URL` to persist queued
+HTTP intents in Postgres:
+
+```bash
+export DATABASE_URL="postgresql://<USER>:<PASSWORD>@<HOST>/<DATABASE>?sslmode=require"
+cargo run -p shadow-relayer -- serve \
+  --config examples/relayer.localnet.toml \
+  --executor-keypair ~/.config/solana/ephemeral.json \
+  --bind 127.0.0.1:8787
+```
+
+On startup the relayer creates this table if it does not exist:
+
+```sql
+create table if not exists relayer_intents (
+  id text primary key,
+  owner text not null,
+  nonce bigint not null,
+  payload_hash text not null,
+  payload jsonb not null,
+  status text not null,
+  created_at bigint not null,
+  updated_at bigint not null,
+  error text
+);
+```
+
+Keep `DATABASE_URL` in your shell, deployment secret manager, or local `.env`
+file. Do not commit real Neon credentials.
+
+### HTTP Queue
+
+The HTTP API supports queueing for app flows that need status tracking before
+execution. With `DATABASE_URL` set, this queue is persisted in Postgres. Without
+`DATABASE_URL`, it is process-local memory and restarting the relayer clears it.
+
+Queue a private payload:
+
+```bash
+curl -X POST http://127.0.0.1:8787/intents \
+  -H 'content-type: application/json' \
+  -d '{
+    "owner": "<OWNER_PUBKEY>",
+    "payload": {
+      "nonce": 1,
+      "kind": "mock_execution",
+      "payload": {
+        "message": "hello shadow"
+      },
+      "expires_at": null
+    }
+  }'
+```
+
+Response:
+
+```json
+{
+  "id": "intent-1234567890-1",
+  "owner": "<OWNER_PUBKEY>",
+  "nonce": 1,
+  "status": "queued",
+  "payload_hash": "<HASH>",
+  "created_at": 1234567890,
+  "updated_at": 1234567890,
+  "error": null
+}
+```
+
+Fetch status:
+
+```bash
+curl http://127.0.0.1:8787/intents/intent-1234567890-1
+```
+
+Execute a queued payload:
+
+```bash
+curl -X POST http://127.0.0.1:8787/intents/intent-1234567890-1/execute
+```
+
+Execution updates the queued status to `executed` or `failed`. Failed queue
+items keep the error message and can be retried with the same execute endpoint.
 
 ## Queue Layout
 

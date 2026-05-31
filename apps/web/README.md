@@ -33,10 +33,14 @@ cargo run -p shadow-relayer -- serve \
   --bind 127.0.0.1:8787
 ```
 
-6. Click **Execute via relayer** in the web console.
+6. Click **Queue in DB** to persist the private payload through the relayer.
+7. Click **Check DB** to refresh the queued status.
+8. Click **Execute queued** to verify the queued payload and mark the on-chain intent executed.
 
 The web flow hashes canonical compact JSON for the HTTP relayer path. The older
 queue/file flow still hashes exact file bytes.
+
+For the quick synchronous demo path, use **Execute once** instead of queueing.
 
 ## Checks
 

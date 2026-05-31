@@ -98,6 +98,10 @@ svg {
   gap: 10px;
 }
 
+.button-row {
+  flex-wrap: wrap;
+}
+
 .select,
 .button,
 .icon-button {
@@ -586,6 +590,14 @@ pre {
   background: var(--warning);
 }
 
+.status-dot.queued {
+  background: var(--warning);
+}
+
+.status-dot.executing {
+  background: var(--accent);
+}
+
 .status-dot.executed {
   background: var(--success);
 }
@@ -638,6 +650,26 @@ pre {
   border: 1px dashed var(--border);
   border-radius: var(--radius);
   color: var(--muted);
+}
+
+.compact-empty {
+  min-height: 110px;
+  margin-top: 14px;
+}
+
+.relayer-card {
+  margin-top: 14px;
+}
+
+.relayer-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  padding: 10px;
 }
 
 .spin {

@@ -16,6 +16,7 @@ shadow-stealth = { path = "../../crates/stealth" }
 shellexpand.workspace = true
 solana-client.workspace = true
 solana-sdk.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "json"] }
 stealth-vault = { path = "../../programs/stealth-vault", features = ["no-entrypoint"] }
 tokio.workspace = true
 toml.workspace = true

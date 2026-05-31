@@ -29,15 +29,18 @@ import {
   DEFAULT_RELAYER_URL,
   deriveIntentPda,
   deriveVaultPda,
+  executeQueuedIntentWithRelayer,
   executeIntentWithRelayer,
   fetchExecutionIntentAccount,
   fetchVaultAccount,
   formatPayload,
+  getRelayerIntent,
   hashIntentPayload,
   hashPayloadBytes,
   IntentKind,
   IntentPayload,
   prepareTransaction,
+  queueIntentWithRelayer,
   QueueItem,
   shortAddress,
   STEALTH_VAULT_PROGRAM_ID,
@@ -45,6 +48,7 @@ import {
   type ExecutionIntentAccount,
   type Cluster,
   type ExecutionRoute,
+  type RelayerQueuedIntent,
   type VaultAccount
 } from "@/lib/shadow";
 import {
@@ -129,6 +133,7 @@ export function ShadowConsole() {
     vault: string;
     payloadHash: string;
   } | null>(null);
+  const [persistedIntent, setPersistedIntent] = useState<RelayerQueuedIntent | null>(null);
 
   const rpcUrl = clusterRpcUrl(cluster);
   const connection = useMemo(() => new Connection(rpcUrl, "confirmed"), [rpcUrl]);
@@ -349,6 +354,81 @@ export function ShadowConsole() {
     }
   }
 
+  async function queueInRelayer() {
+    if (!ownerValid) {
+      setRelayerState("error");
+      setRelayerMessage("Set a valid owner wallet before queueing the payload.");
+      return;
+    }
+
+    setRelayerState("sending");
+    setRelayerMessage("Queueing private payload in relayer storage...");
+
+    try {
+      const payload = buildPayload(composer);
+      const hash = await hashIntentPayload(payload);
+      setPayloadText(formatPayload(payload));
+      setPayloadHash(hash);
+
+      const queued = await queueIntentWithRelayer({
+        relayerUrl,
+        owner,
+        payload
+      });
+      setPersistedIntent(queued);
+      setRelayerState("success");
+      setRelayerMessage(`Queued in relayer storage: ${queued.id}`);
+    } catch (error) {
+      setRelayerState("error");
+      setRelayerMessage(error instanceof Error ? error.message : "Failed to queue payload");
+    }
+  }
+
+  async function refreshPersistedIntent() {
+    if (!persistedIntent) return;
+
+    setRelayerState("sending");
+    setRelayerMessage("Checking persisted intent status...");
+
+    try {
+      const queued = await getRelayerIntent({
+        relayerUrl,
+        id: persistedIntent.id
+      });
+      setPersistedIntent(queued);
+      setRelayerState("success");
+      setRelayerMessage(`Relayer status: ${queued.status}`);
+    } catch (error) {
+      setRelayerState("error");
+      setRelayerMessage(error instanceof Error ? error.message : "Failed to fetch queued intent");
+    }
+  }
+
+  async function executePersistedIntent() {
+    if (!persistedIntent) return;
+
+    setRelayerState("sending");
+    setRelayerMessage("Executing queued private payload...");
+
+    try {
+      const queued = await executeQueuedIntentWithRelayer({
+        relayerUrl,
+        id: persistedIntent.id
+      });
+      setPersistedIntent(queued);
+      setRelayerState(queued.status === "failed" ? "error" : "success");
+      setRelayerMessage(
+        queued.status === "failed"
+          ? queued.error ?? "Queued execution failed"
+          : `Relayer status: ${queued.status}`
+      );
+      await refreshIntent();
+    } catch (error) {
+      setRelayerState("error");
+      setRelayerMessage(error instanceof Error ? error.message : "Failed to execute queued intent");
+    }
+  }
+
   async function refreshVault() {
     if (!vaultPda) return;
     setVaultAccount(await fetchVaultAccount(connection, vaultPda));
@@ -465,7 +545,11 @@ export function ShadowConsole() {
       <section className="stats-grid" aria-label="Project state">
         <Stat icon={<Shield />} label="Vault PDA" value={vaultPda ? shortAddress(vaultPda) : "Unset"} />
         <Stat icon={<KeyRound />} label="Intent PDA" value={intentPda ? shortAddress(intentPda) : "Unset"} />
-        <Stat icon={<Activity />} label="Queue" value={`${queue.length} intents`} />
+        <Stat
+          icon={<Activity />}
+          label="Relayer queue"
+          value={persistedIntent ? persistedIntent.status : `${queue.length} local`}
+        />
         <Stat icon={<RadioTower />} label="RPC" value={clusterRpcUrl(cluster)} />
       </section>
 
@@ -665,12 +749,46 @@ export function ShadowConsole() {
             <button
               className="button button-primary"
               type="button"
+              disabled={!ownerValid || relayerState === "sending"}
+              onClick={queueInRelayer}
+              aria-busy={relayerState === "sending"}
+            >
+              {relayerState === "sending" ? <Loader2 className="spin" /> : <FileJson />}
+              Queue in DB
+            </button>
+            <button
+              className="button"
+              type="button"
               disabled={!ownerValid || !intentPda || relayerState === "sending"}
               onClick={executeViaRelayer}
               aria-busy={relayerState === "sending"}
             >
               {relayerState === "sending" ? <Loader2 className="spin" /> : <RadioTower />}
-              Execute via relayer
+              Execute once
+            </button>
+            <button
+              className="button"
+              type="button"
+              disabled={
+                !persistedIntent ||
+                persistedIntent.status === "executed" ||
+                persistedIntent.status === "executing" ||
+                relayerState === "sending"
+              }
+              onClick={executePersistedIntent}
+              aria-busy={relayerState === "sending"}
+            >
+              {relayerState === "sending" ? <Loader2 className="spin" /> : <ArrowRight />}
+              Execute queued
+            </button>
+            <button
+              className="button"
+              type="button"
+              disabled={!persistedIntent || relayerState === "sending"}
+              onClick={refreshPersistedIntent}
+            >
+              <RefreshCw />
+              Check DB
             </button>
             <button
               className="button"
@@ -680,6 +798,7 @@ export function ShadowConsole() {
                 setRelayerMessage("");
                 setRelayerState("idle");
                 setRelayerResult(null);
+                setPersistedIntent(null);
               }}
             >
               <RefreshCw />
@@ -712,6 +831,18 @@ export function ShadowConsole() {
               ]}
             />
           ) : null}
+          {persistedIntent ? (
+            <RelayerQueueCard
+              item={persistedIntent}
+              onCopy={(label, text) => copyText(label, text)}
+              copied={copied}
+            />
+          ) : (
+            <div className="empty-state compact-empty">
+              <FileJson />
+              <p>No persisted relayer intent yet.</p>
+            </div>
+          )}
           <div className="queue-list">
             {queue.length === 0 ? (
               <div className="empty-state">
@@ -1133,7 +1264,51 @@ function CommandBlock({
   );
 }
 
-function StatusDot({ status }: { status: QueueItem["status"] }) {
+function RelayerQueueCard({
+  item,
+  copied,
+  onCopy
+}: {
+  item: RelayerQueuedIntent;
+  copied: string | null;
+  onCopy: (label: string, text: string) => void;
+}) {
+  const rows: [string, string][] = [
+    ["ID", item.id],
+    ["Status", item.status],
+    ["Owner", item.owner],
+    ["Nonce", item.nonce.toString()],
+    ["Hash", item.payload_hash],
+    ["Updated", new Date(item.updated_at * 1000).toLocaleString()]
+  ];
+
+  if (item.error) {
+    rows.push(["Error", item.error]);
+  }
+
+  return (
+    <div className="relayer-card">
+      <div className="relayer-card-header">
+        <div className="queue-title">
+          <StatusDot status={item.status} />
+          <strong>Persisted queue item</strong>
+          <span>{item.status}</span>
+        </div>
+        <button
+          aria-label="Copy queued intent ID"
+          className="icon-button"
+          type="button"
+          onClick={() => onCopy("relayer-queue-id", item.id)}
+        >
+          {copied === "relayer-queue-id" ? <Check /> : <Copy />}
+        </button>
+      </div>
+      <AccountReadout title="Relayer DB record" rows={rows} />
+    </div>
+  );
+}
+
+function StatusDot({ status }: { status: QueueItem["status"] | RelayerQueuedIntent["status"] }) {
   return <span className={`status-dot ${status}`} aria-label={status} />;
 }
 

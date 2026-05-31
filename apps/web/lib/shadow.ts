@@ -88,6 +88,19 @@ export type RelayerExecuteResponse = {
   payload_hash: string;
 };
 
+export type RelayerQueueStatus = "queued" | "executing" | "executed" | "failed";
+
+export type RelayerQueuedIntent = {
+  id: string;
+  owner: string;
+  nonce: number;
+  status: RelayerQueueStatus;
+  payload_hash: string;
+  created_at: number;
+  updated_at: number;
+  error: string | null;
+};
+
 export const DEFAULT_RELAYER_URL =
   process.env.NEXT_PUBLIC_RELAYER_URL ?? "http://127.0.0.1:8787";
 
@@ -253,18 +266,53 @@ export async function executeIntentWithRelayer({
   owner: string;
   payload: IntentPayload;
 }): Promise<RelayerExecuteResponse> {
-  const response = await fetch(`${relayerUrl.replace(/\/$/, "")}/execute-once`, {
+  return relayerRequest<RelayerExecuteResponse>(relayerUrl, "/execute-once", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ owner, payload })
   });
-  const result = (await response.json()) as RelayerExecuteResponse & { error?: string };
+}
 
-  if (!response.ok) {
-    throw new Error(result.error ?? "Relayer execution failed");
-  }
+export async function queueIntentWithRelayer({
+  relayerUrl,
+  owner,
+  payload
+}: {
+  relayerUrl: string;
+  owner: string;
+  payload: IntentPayload;
+}): Promise<RelayerQueuedIntent> {
+  return relayerRequest<RelayerQueuedIntent>(relayerUrl, "/intents", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner, payload })
+  });
+}
 
-  return result;
+export async function getRelayerIntent({
+  relayerUrl,
+  id
+}: {
+  relayerUrl: string;
+  id: string;
+}): Promise<RelayerQueuedIntent> {
+  return relayerRequest<RelayerQueuedIntent>(relayerUrl, `/intents/${encodeURIComponent(id)}`);
+}
+
+export async function executeQueuedIntentWithRelayer({
+  relayerUrl,
+  id
+}: {
+  relayerUrl: string;
+  id: string;
+}): Promise<RelayerQueuedIntent> {
+  return relayerRequest<RelayerQueuedIntent>(
+    relayerUrl,
+    `/intents/${encodeURIComponent(id)}/execute`,
+    {
+      method: "POST"
+    }
+  );
 }
 
 export function clusterRpcUrl(cluster: Cluster): string {
@@ -331,4 +379,19 @@ function bytesToHex(bytes: Uint8Array) {
   return Array.from(bytes)
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+}
+
+async function relayerRequest<T>(
+  relayerUrl: string,
+  path: string,
+  init?: RequestInit
+): Promise<T> {
+  const response = await fetch(`${relayerUrl.replace(/\/$/, "")}${path}`, init);
+  const result = (await response.json()) as T & { error?: string };
+
+  if (!response.ok) {
+    throw new Error(result.error ?? "Relayer request failed");
+  }
+
+  return result;
 }

@@ -1,10 +1,12 @@
 use std::{
+    collections::HashMap,
+    env,
     fs::{self, OpenOptions},
     io::ErrorKind,
     net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -12,7 +14,7 @@ use std::{
 use anchor_lang::AccountDeserialize;
 use anyhow::{Context, Result};
 use axum::{
-    extract::State,
+    extract::{Path as AxumPath, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -28,6 +30,7 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::{read_keypair_file, Keypair, Signer},
 };
+use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 use stealth_vault::{ExecutionIntent, INTENT_STATUS_PENDING};
 use tower_http::cors::CorsLayer;
 
@@ -227,10 +230,17 @@ struct ApiState {
     rpc_client: Arc<RpcClient>,
     rpc_url: String,
     executor: Arc<Keypair>,
+    queue: QueueStore,
 }
 
 #[derive(Debug, Deserialize)]
 struct ExecuteOnceRequest {
+    owner: Pubkey,
+    payload: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct EnqueueIntentRequest {
     owner: Pubkey,
     payload: serde_json::Value,
 }
@@ -246,13 +256,62 @@ struct ExecuteOnceResponse {
     payload_hash: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct QueuedIntentResponse {
+    id: String,
+    owner: Pubkey,
+    nonce: u64,
+    status: QueuedIntentStatus,
+    payload_hash: String,
+    created_at: i64,
+    updated_at: i64,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum QueuedIntentStatus {
+    Queued,
+    Executing,
+    Executed,
+    Failed,
+}
+
+#[derive(Debug, Default)]
+struct IntentQueue {
+    next_id: u64,
+    items: HashMap<String, QueuedIntent>,
+}
+
+#[derive(Debug, Clone)]
+struct QueuedIntent {
+    id: String,
+    owner: Pubkey,
+    payload: serde_json::Value,
+    nonce: u64,
+    payload_hash: String,
+    status: QueuedIntentStatus,
+    created_at: i64,
+    updated_at: i64,
+    error: Option<String>,
+}
+
+#[derive(Clone)]
+enum QueueStore {
+    Memory(Arc<Mutex<IntentQueue>>),
+    Postgres(PgPool),
+}
+
 #[derive(Debug, Serialize)]
 struct HealthResponse {
     status: &'static str,
 }
 
 #[derive(Debug)]
-struct ApiError(anyhow::Error);
+struct ApiError {
+    status: StatusCode,
+    error: anyhow::Error,
+}
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -400,10 +459,14 @@ async fn handle_serve(args: ServeArgs) -> Result<()> {
         rpc_client: Arc::new(rpc_client),
         rpc_url: config.rpc_url,
         executor: Arc::new(executor),
+        queue: init_queue_store().await?,
     };
     let app = Router::new()
         .route("/health", get(health))
         .route("/execute-once", post(execute_once_http))
+        .route("/intents", post(enqueue_intent_http))
+        .route("/intents/:id", get(get_intent_http))
+        .route("/intents/:id/execute", post(execute_queued_intent_http))
         .layer(CorsLayer::permissive())
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(config.bind)
@@ -418,6 +481,52 @@ async fn handle_serve(args: ServeArgs) -> Result<()> {
 
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
+}
+
+async fn init_queue_store() -> Result<QueueStore> {
+    let database_url = env::var("DATABASE_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+
+    let Some(database_url) = database_url else {
+        println!("relayer queue storage: memory");
+        return Ok(QueueStore::Memory(Arc::new(Mutex::new(
+            IntentQueue::default(),
+        ))));
+    };
+
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
+        .await
+        .context("failed to connect to Postgres using DATABASE_URL")?;
+    sqlx::query(
+        r#"
+        create table if not exists relayer_intents (
+            id text primary key,
+            owner text not null,
+            nonce bigint not null,
+            payload_hash text not null,
+            payload jsonb not null,
+            status text not null,
+            created_at bigint not null,
+            updated_at bigint not null,
+            error text
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .context("failed to create relayer_intents table")?;
+    sqlx::query(
+        "create index if not exists relayer_intents_owner_nonce_idx on relayer_intents(owner, nonce)",
+    )
+    .execute(&pool)
+    .await
+    .context("failed to create relayer_intents owner/nonce index")?;
+
+    println!("relayer queue storage: postgres");
+    Ok(QueueStore::Postgres(pool))
 }
 
 async fn execute_once_http(
@@ -456,10 +565,112 @@ async fn execute_once_http(
         })
     })
     .await
-    .map_err(|err| ApiError(anyhow::anyhow!("relayer worker task failed: {err}")))?
-    .map_err(ApiError)?;
+    .map_err(|err| ApiError::bad_request(anyhow::anyhow!("relayer worker task failed: {err}")))?
+    .map_err(ApiError::bad_request)?;
 
     Ok(Json(response))
+}
+
+async fn enqueue_intent_http(
+    State(state): State<ApiState>,
+    Json(request): Json<EnqueueIntentRequest>,
+) -> Result<Json<QueuedIntentResponse>, ApiError> {
+    let loaded = load_payload_value(request.payload.clone()).map_err(ApiError::bad_request)?;
+    ensure_not_expired(&loaded.intent).map_err(ApiError::bad_request)?;
+    let now = unix_timestamp().map_err(ApiError::bad_request)?;
+    let item = state
+        .queue
+        .enqueue(
+            request.owner,
+            request.payload,
+            loaded.intent.nonce,
+            format_hash(&loaded.hash),
+            now,
+        )
+        .await
+        .map_err(ApiError::internal)?;
+
+    Ok(Json(item.to_response()))
+}
+
+async fn get_intent_http(
+    State(state): State<ApiState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<QueuedIntentResponse>, ApiError> {
+    let item = state.queue.get(&id).await.map_err(ApiError::internal)?;
+    let item = item.ok_or_else(|| {
+        ApiError::not_found(anyhow::anyhow!("queued intent `{id}` was not found"))
+    })?;
+
+    Ok(Json(item.to_response()))
+}
+
+async fn execute_queued_intent_http(
+    State(state): State<ApiState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<QueuedIntentResponse>, ApiError> {
+    let item = state
+        .queue
+        .mark_executing(&id, unix_timestamp().map_err(ApiError::bad_request)?)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| {
+            ApiError::not_found(anyhow::anyhow!("queued intent `{id}` was not found"))
+        })?;
+
+    let rpc_client = Arc::clone(&state.rpc_client);
+    let rpc_url = state.rpc_url.clone();
+    let executor = Arc::clone(&state.executor);
+    let execution = tokio::task::spawn_blocking(move || {
+        let loaded = load_payload_value(item.payload)?;
+        ensure_not_expired(&loaded.intent)?;
+        anyhow::ensure!(
+            loaded.intent.nonce == item.nonce,
+            "queued nonce changed before execution"
+        );
+        let intent_account = fetch_intent(&rpc_client, item.owner, loaded.intent.nonce)?;
+        validate_intent_for_execution(&intent_account, loaded.hash, executor.pubkey())?;
+        execute_payload_action(
+            &rpc_client,
+            &loaded.action,
+            &loaded.route,
+            executor.as_ref(),
+        )
+        .context("failed to execute private payload action")?;
+        execute_intent(
+            &rpc_client,
+            item.owner,
+            executor.as_ref(),
+            loaded.intent.nonce,
+        )
+        .with_context(|| format!("failed to execute intent on {rpc_url}"))?;
+
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(|err| ApiError::bad_request(anyhow::anyhow!("relayer worker task failed: {err}")))?;
+
+    let now = unix_timestamp().map_err(ApiError::bad_request)?;
+    let item = match execution {
+        Ok(()) => state
+            .queue
+            .mark_finished(&id, QueuedIntentStatus::Executed, None, now)
+            .await
+            .map_err(ApiError::internal)?,
+        Err(err) => state
+            .queue
+            .mark_finished(
+                &id,
+                QueuedIntentStatus::Failed,
+                Some(format!("{err:#}")),
+                now,
+            )
+            .await
+            .map_err(ApiError::internal)?,
+    }
+    .ok_or_else(|| ApiError::not_found(anyhow::anyhow!("queued intent `{id}` was not found")))?;
+
+    Ok(Json(item.to_response()))
 }
 
 fn resolve_execute_once_config(args: ExecuteOnceArgs) -> Result<ExecuteOnceConfig> {
@@ -913,10 +1124,7 @@ fn fetch_intent(rpc_client: &RpcClient, owner: Pubkey, nonce: u64) -> Result<Exe
 
 fn ensure_not_expired(payload: &IntentPayload) -> Result<()> {
     if let Some(expires_at) = payload.expires_at {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("system clock is before unix epoch")?
-            .as_secs() as i64;
+        let now = unix_timestamp()?;
         anyhow::ensure!(
             expires_at > now,
             "payload expired at {expires_at}; current unix timestamp is {now}"
@@ -924,6 +1132,13 @@ fn ensure_not_expired(payload: &IntentPayload) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn unix_timestamp() -> Result<i64> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before unix epoch")?
+        .as_secs() as i64)
 }
 
 fn format_hash(hash: &[u8; 32]) -> String {
@@ -942,11 +1157,301 @@ fn print_execution_result(result: &shadow_stealth::ExecuteIntentResult) {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = Json(serde_json::json!({
-            "error": format!("{:#}", self.0),
+            "error": format!("{:#}", self.error),
         }));
 
-        (StatusCode::BAD_REQUEST, body).into_response()
+        (self.status, body).into_response()
     }
+}
+
+impl ApiError {
+    fn bad_request(error: anyhow::Error) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            error,
+        }
+    }
+
+    fn not_found(error: anyhow::Error) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            error,
+        }
+    }
+
+    fn internal(error: anyhow::Error) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            error,
+        }
+    }
+}
+
+impl QueueStore {
+    async fn enqueue(
+        &self,
+        owner: Pubkey,
+        payload: serde_json::Value,
+        nonce: u64,
+        payload_hash: String,
+        now: i64,
+    ) -> Result<QueuedIntent> {
+        match self {
+            Self::Memory(queue) => {
+                let mut queue = queue
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("relayer queue lock was poisoned"))?;
+                Ok(queue.enqueue(owner, payload, nonce, payload_hash, now))
+            }
+            Self::Postgres(pool) => {
+                let id = new_intent_id()?;
+                let item = QueuedIntent {
+                    id,
+                    owner,
+                    payload,
+                    nonce,
+                    payload_hash,
+                    status: QueuedIntentStatus::Queued,
+                    created_at: now,
+                    updated_at: now,
+                    error: None,
+                };
+
+                sqlx::query(
+                    r#"
+                    insert into relayer_intents
+                        (id, owner, nonce, payload_hash, payload, status, created_at, updated_at, error)
+                    values
+                        ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    "#,
+                )
+                .bind(&item.id)
+                .bind(item.owner.to_string())
+                .bind(item.nonce as i64)
+                .bind(&item.payload_hash)
+                .bind(sqlx::types::Json(&item.payload))
+                .bind(item.status.as_str())
+                .bind(item.created_at)
+                .bind(item.updated_at)
+                .bind(&item.error)
+                .execute(pool)
+                .await
+                .context("failed to insert queued intent")?;
+
+                Ok(item)
+            }
+        }
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<QueuedIntent>> {
+        match self {
+            Self::Memory(queue) => {
+                let queue = queue
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("relayer queue lock was poisoned"))?;
+                Ok(queue.items.get(id).cloned())
+            }
+            Self::Postgres(pool) => fetch_queued_intent(pool, id).await,
+        }
+    }
+
+    async fn mark_executing(&self, id: &str, now: i64) -> Result<Option<QueuedIntent>> {
+        match self {
+            Self::Memory(queue) => {
+                let mut queue = queue
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("relayer queue lock was poisoned"))?;
+                let Some(item) = queue.items.get_mut(id) else {
+                    return Ok(None);
+                };
+                anyhow::ensure!(
+                    matches!(
+                        item.status,
+                        QueuedIntentStatus::Queued | QueuedIntentStatus::Failed
+                    ),
+                    "queued intent `{id}` cannot execute from status {:?}",
+                    item.status
+                );
+                item.status = QueuedIntentStatus::Executing;
+                item.updated_at = now;
+                item.error = None;
+                Ok(Some(item.clone()))
+            }
+            Self::Postgres(pool) => {
+                let Some(item) = fetch_queued_intent(pool, id).await? else {
+                    return Ok(None);
+                };
+                anyhow::ensure!(
+                    matches!(
+                        item.status,
+                        QueuedIntentStatus::Queued | QueuedIntentStatus::Failed
+                    ),
+                    "queued intent `{id}` cannot execute from status {:?}",
+                    item.status
+                );
+                update_queued_intent_status(pool, id, QueuedIntentStatus::Executing, None, now)
+                    .await
+            }
+        }
+    }
+
+    async fn mark_finished(
+        &self,
+        id: &str,
+        status: QueuedIntentStatus,
+        error: Option<String>,
+        now: i64,
+    ) -> Result<Option<QueuedIntent>> {
+        match self {
+            Self::Memory(queue) => {
+                let mut queue = queue
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("relayer queue lock was poisoned"))?;
+                let Some(item) = queue.items.get_mut(id) else {
+                    return Ok(None);
+                };
+                item.status = status;
+                item.updated_at = now;
+                item.error = error;
+                Ok(Some(item.clone()))
+            }
+            Self::Postgres(pool) => update_queued_intent_status(pool, id, status, error, now).await,
+        }
+    }
+}
+
+impl IntentQueue {
+    fn enqueue(
+        &mut self,
+        owner: Pubkey,
+        payload: serde_json::Value,
+        nonce: u64,
+        payload_hash: String,
+        now: i64,
+    ) -> QueuedIntent {
+        self.next_id = self.next_id.saturating_add(1);
+        let id = format!("intent-{now}-{}", self.next_id);
+        let item = QueuedIntent {
+            id: id.clone(),
+            owner,
+            payload,
+            nonce,
+            payload_hash,
+            status: QueuedIntentStatus::Queued,
+            created_at: now,
+            updated_at: now,
+            error: None,
+        };
+
+        self.items.insert(id, item.clone());
+        item
+    }
+}
+
+impl QueuedIntent {
+    fn to_response(&self) -> QueuedIntentResponse {
+        QueuedIntentResponse {
+            id: self.id.clone(),
+            owner: self.owner,
+            nonce: self.nonce,
+            status: self.status,
+            payload_hash: self.payload_hash.clone(),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            error: self.error.clone(),
+        }
+    }
+}
+
+impl QueuedIntentStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Executing => "executing",
+            Self::Executed => "executed",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "queued" => Ok(Self::Queued),
+            "executing" => Ok(Self::Executing),
+            "executed" => Ok(Self::Executed),
+            "failed" => Ok(Self::Failed),
+            other => anyhow::bail!("unknown queued intent status `{other}`"),
+        }
+    }
+}
+
+async fn fetch_queued_intent(pool: &PgPool, id: &str) -> Result<Option<QueuedIntent>> {
+    let row = sqlx::query(
+        r#"
+        select id, owner, nonce, payload_hash, payload, status, created_at, updated_at, error
+        from relayer_intents
+        where id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .with_context(|| format!("failed to fetch queued intent `{id}`"))?;
+
+    row.map(row_to_queued_intent).transpose()
+}
+
+async fn update_queued_intent_status(
+    pool: &PgPool,
+    id: &str,
+    status: QueuedIntentStatus,
+    error: Option<String>,
+    now: i64,
+) -> Result<Option<QueuedIntent>> {
+    let row = sqlx::query(
+        r#"
+        update relayer_intents
+        set status = $2, error = $3, updated_at = $4
+        where id = $1
+        returning id, owner, nonce, payload_hash, payload, status, created_at, updated_at, error
+        "#,
+    )
+    .bind(id)
+    .bind(status.as_str())
+    .bind(error)
+    .bind(now)
+    .fetch_optional(pool)
+    .await
+    .with_context(|| format!("failed to update queued intent `{id}`"))?;
+
+    row.map(row_to_queued_intent).transpose()
+}
+
+fn row_to_queued_intent(row: sqlx::postgres::PgRow) -> Result<QueuedIntent> {
+    let owner: String = row.try_get("owner")?;
+    let status: String = row.try_get("status")?;
+    let payload: sqlx::types::Json<serde_json::Value> = row.try_get("payload")?;
+
+    Ok(QueuedIntent {
+        id: row.try_get("id")?,
+        owner: Pubkey::from_str(&owner)
+            .with_context(|| format!("invalid owner pubkey `{owner}`"))?,
+        payload: payload.0,
+        nonce: row.try_get::<i64, _>("nonce")? as u64,
+        payload_hash: row.try_get("payload_hash")?,
+        status: QueuedIntentStatus::parse(&status)?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+        error: row.try_get("error")?,
+    })
+}
+
+fn new_intent_id() -> Result<String> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before unix epoch")?
+        .as_nanos();
+
+    Ok(format!("intent-{nanos}"))
 }
 
 #[cfg(test)]
@@ -1118,6 +1623,34 @@ payload = "{}"
             }
         );
         assert_eq!(loaded.hash, hash(&canonical_bytes).to_bytes());
+    }
+
+    #[test]
+    fn in_memory_queue_assigns_ids_and_response_shape() {
+        let owner = Pubkey::new_unique();
+        let payload = serde_json::json!({
+            "nonce": 7,
+            "kind": "mock_execution",
+            "payload": {
+                "message": "hello shadow"
+            },
+            "expires_at": null
+        });
+        let mut queue = IntentQueue::default();
+
+        let first = queue.enqueue(owner, payload.clone(), 7, "aa".repeat(32), 100);
+        let second = queue.enqueue(owner, payload, 8, "bb".repeat(32), 101);
+        let response = first.to_response();
+
+        assert_eq!(first.id, "intent-100-1");
+        assert_eq!(second.id, "intent-101-2");
+        assert_eq!(response.owner, owner);
+        assert_eq!(response.nonce, 7);
+        assert_eq!(response.status, QueuedIntentStatus::Queued);
+        assert_eq!(response.created_at, 100);
+        assert_eq!(response.updated_at, 100);
+        assert_eq!(response.error, None);
+        assert_eq!(queue.items.len(), 2);
     }
 
     #[test]
