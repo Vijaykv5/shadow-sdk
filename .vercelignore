@@ -1,7 +1,8 @@
-target
-test-ledger
-payloads
+/target
+/test-ledger
+/payloads
+/.next
+/node_modules
 apps/web/.next
 apps/web/node_modules
-node_modules
 .DS_Store
